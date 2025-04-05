@@ -18,8 +18,8 @@ st.set_page_config(
     layout="wide"
 )
 
-
-health_check()
+config_file = "/home/saradindu/dev/streamlit-healthcheck/config/health_check_config.json"
+health_check(config_path=config_file)
 
 
 # Example of how to use a custom health check
