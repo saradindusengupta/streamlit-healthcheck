@@ -12,21 +12,51 @@ from typing import Dict, List, Any, Optional, Callable
 import threading
 import functools
 import traceback
+import logging
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()  # Prints to console
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class StreamlitPageMonitor:
     """Monitor Streamlit pages for exceptions and st.error calls"""
     _instance = None
-    _errors: Dict[str, List[Dict[str, Any]]] = {}  # Changed to store lists of errors
-    _st_error = st.error  # Store original st.error
+    _errors: Dict[str, List[Dict[str, Any]]] = {}
+    _st_error = st.error
+    _current_page = None
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(StreamlitPageMonitor, cls).__new__(cls)
+            
             # Monkey patch st.error to capture error messages
             def patched_error(*args, **kwargs):
                 error_message = " ".join(str(arg) for arg in args)
-                cls._handle_st_error(error_message)
+                current_page = cls._current_page
+                
+                error_info = {
+                    'error': error_message,
+                    'traceback': traceback.format_stack(),
+                    'timestamp': datetime.now().isoformat(),
+                    'status': 'critical',
+                    'type': 'streamlit_error',
+                    'page': current_page
+                }
+
+                if current_page not in cls._errors:
+                    cls._errors[current_page] = []
+                
+                cls._errors[current_page].append(error_info)
+                
+                # Call original st.error
                 return cls._st_error(*args, **kwargs)
+                
             st.error = patched_error
         return cls._instance
 
@@ -52,19 +82,25 @@ class StreamlitPageMonitor:
         cls._errors[current_page].append(error_info)
 
     @classmethod
-    def monitor_page(cls, page_name):
+    def set_page_context(cls, page_name: str):
+        """Set the current page context"""
+        cls._current_page = page_name
+
+    @classmethod
+    def monitor_page(cls, page_name: str):
         """Decorator to monitor Streamlit pages for exceptions and st.error calls"""
         def decorator(func):
-            @functools.wraps(func) 
+            @functools.wraps(func)
             def wrapper(*args, **kwargs):
+                # Set the current page context
+                cls.set_page_context(page_name)
                 try:
                     # Clear previous exception errors but keep st.error calls
                     if page_name in cls._errors:
                         cls._errors[page_name] = [
-                            e for e in cls._errors[page_name] 
+                            e for e in cls._errors[page_name]
                             if e.get('type') == 'streamlit_error'
                         ]
-                    
                     result = func(*args, **kwargs)
                     return result
                 except Exception as e:
@@ -73,9 +109,9 @@ class StreamlitPageMonitor:
                         'traceback': traceback.format_exc(),
                         'timestamp': datetime.now().isoformat(),
                         'status': 'critical',
-                        'type': 'exception'
+                        'type': 'exception',
+                        'page': page_name
                     }
-                    
                     if page_name not in cls._errors:
                         cls._errors[page_name] = []
                     cls._errors[page_name].append(error_info)
@@ -86,11 +122,19 @@ class StreamlitPageMonitor:
     @classmethod
     def get_page_errors(cls):
         """Get all recorded page errors"""
-        return {
-            page: errors 
-            for page, errors in cls._errors.items() 
-            if errors  # Only return pages that have errors
-        }
+        result = {}
+        for page, errors in cls._errors.items():
+            if errors:  # Only include pages with errors
+                result[page] = [
+                    {
+                        'error': err.get('error', 'Unknown error'),
+                        'traceback': err.get('traceback', []),
+                        'timestamp': err.get('timestamp', ''),
+                        'type': err.get('type', 'unknown')
+                    }
+                    for err in errors
+                ]
+        return result
 
     @classmethod
     def clear_errors(cls, page_name: Optional[str] = None):
@@ -114,6 +158,8 @@ class HealthCheckService:
         Args:
             config_path: Path to the health check configuration file
         """
+        self.logger = logging.getLogger(f"{__name__}.HealthCheckService")
+        self.logger.info("Initializing HealthCheckService")
         self.config_path = config_path
         self.health_data: Dict[str, Any] = {
             "last_updated": None,
@@ -126,7 +172,8 @@ class HealthCheckService:
         self.check_interval = self.config.get("check_interval", 60)  # Default: 60 seconds
         self._running = False
         self._thread = None
-        
+        self.streamlit_url = self.config.get("streamlit_url", "http://localhost")
+        self.streamlit_port = self.config.get("streamlit_port", 8501)  # Default: 8501
     def _load_config(self) -> Dict:
         """Load health check configuration from file."""
         if os.path.exists(self.config_path):
@@ -143,6 +190,8 @@ class HealthCheckService:
         """Return default health check configuration."""
         return {
             "check_interval": 60,
+            "streamlit_url": "http://localhost",
+            "streamlit_port": 8501,
             "system_checks": {
                 "cpu": True,
                 "memory": True,
@@ -150,11 +199,12 @@ class HealthCheckService:
             },
             "dependencies": {
                 "api_endpoints": [
+                    # Example API endpoint to check
                     {"name": "example_api", "url": "https://httpbin.org/get", "timeout": 5}
                 ],
                 "databases": [
                     # Example database connection to check
-                    # {"name": "main_db", "type": "postgres", "connection_string": "..."}
+                    {"name": "main_db", "type": "postgres", "connection_string": "..."}
                 ]
             },
             "thresholds": {
@@ -193,6 +243,9 @@ class HealthCheckService:
         # Update timestamp
         self.health_data["last_updated"] = datetime.now().isoformat()
         
+        # Check Streamlit server
+        self.health_data["streamlit_server"] = self.check_streamlit_server()
+        
         # System checks
         if self.config["system_checks"].get("cpu", True):
             self.check_cpu()
@@ -201,17 +254,11 @@ class HealthCheckService:
         if self.config["system_checks"].get("disk", True):
             self.check_disk()
             
-        # Dependency checks
+        # Rest of the existing checks...
         self.check_dependencies()
-        
-        # Custom checks (if any registered)
         self.run_custom_checks()
-        
-        # Determine overall status
-        self._update_overall_status()
-        
-        # Checks for Streamlit pages
         self.check_streamlit_pages()
+        self._update_overall_status()
         
     def check_cpu(self):
         """Check CPU usage and update health data."""
@@ -378,46 +425,55 @@ class HealthCheckService:
         """Update the overall health status based on individual checks."""
         has_critical = False
         has_warning = False
+        has_healthy = False
         has_unknown = False
+        
+        # Helper function to check status
+        def check_component_status(status):
+            nonlocal has_critical, has_warning, has_healthy, has_unknown
+            if status == "critical":
+                has_critical = True
+            elif status == "warning":
+                has_warning = True
+            elif status == "healthy":
+                has_healthy = True
+            elif status == "unknown":
+                has_unknown = True
+
+        # Check Streamlit server status
+        server_status = self.health_data.get("streamlit_server", {}).get("status")
+        check_component_status(server_status)
         
         # Check system status
         for system_check in self.health_data.get("system", {}).values():
-            if system_check.get("status") == "critical":
-                has_critical = True
-            elif system_check.get("status") == "warning":
-                has_warning = True
-            elif system_check.get("status") == "unknown":
-                has_unknown = True
-                
+            check_component_status(system_check.get("status"))
+                    
         # Check dependencies status
         for dep_check in self.health_data.get("dependencies", {}).values():
-            if dep_check.get("status") == "critical":
-                has_critical = True
-            elif dep_check.get("status") == "warning":
-                has_warning = True
-            elif dep_check.get("status") == "unknown":
-                has_unknown = True
-                
+            check_component_status(dep_check.get("status"))
+                    
         # Check custom checks status
         for custom_check in self.health_data.get("custom_checks", {}).values():
             if isinstance(custom_check, dict) and "check_func" not in custom_check:
-                if custom_check.get("status") == "critical":
-                    has_critical = True
-                elif custom_check.get("status") == "warning":
-                    has_warning = True
-                elif custom_check.get("status") == "unknown":
-                    has_unknown = True
-                    
-        # Determine overall status
+                check_component_status(custom_check.get("status"))
+        
+        # Check Streamlit pages status
+        pages_status = self.health_data.get("streamlit_pages", {}).get("status")
+        check_component_status(pages_status)
+                        
+        # Determine overall status with priority:
+        # critical > warning > unknown > healthy
         if has_critical:
             self.health_data["overall_status"] = "critical"
         elif has_warning:
             self.health_data["overall_status"] = "warning"
-        elif has_unknown:
+        elif has_unknown and not has_healthy:
             self.health_data["overall_status"] = "unknown"
-        else:
+        elif has_healthy:
             self.health_data["overall_status"] = "healthy"
-            
+        else:
+            self.health_data["overall_status"] = "unknown"
+                
     def get_health_data(self) -> Dict:
         """Get the latest health check data."""
         # Create a copy without the function references
@@ -440,6 +496,13 @@ class HealthCheckService:
         try:
             with open(self.config_path, "w") as f:
                 json.dump(self.config, f, indent=2)
+                st.success(f"Health check config saved successfully to {self.config_path}")
+        except FileNotFoundError:
+            st.error(f"Configuration file not found: {self.config_path}")
+        except PermissionError:
+            st.error(f"Permission denied: Unable to write to {self.config_path}")
+        except json.JSONDecodeError:
+            st.error(f"Error decoding JSON in config file: {self.config_path}")
         except Exception as e:
             st.error(f"Error saving health check config: {str(e)}")
     def check_streamlit_pages(self):
@@ -465,13 +528,75 @@ class HealthCheckService:
                 "errors": {},
                 "details": "All pages functioning normally"
             }
+    
+    def check_streamlit_server(self) -> Dict[str, Any]:
+        """Check if the Streamlit server is running and responding."""
+        try:
+            host = self.streamlit_url.rstrip('/')
+            if not host.startswith(('http://', 'https://')):
+                host = f"http://{host}"
+            
+            url = f"{host}:{self.streamlit_port}/healthz"
+            self.logger.info(f"Checking Streamlit server health at: {url}")
+            
+            start_time = time.time()
+            response = requests.get(url, timeout=3)
+            total_time = (time.time() - start_time) * 1000
+            self.logger.info(f"{response.status_code} - {response.text}")
+            # Check if the response is healthy
+            if response.status_code == 200:
+                self.logger.info(f"Streamlit server healthy - Response time: {round(total_time, 2)}ms")
+                return {
+                    "status": "healthy",
+                    "response_code": response.status_code,
+                    "latency_ms": round(total_time, 2),
+                    "message": "Streamlit server is running",
+                    "url": url
+                }
+            else:
+                self.logger.warning(f"Unhealthy response from server: {response.status_code}")
+                return {
+                    "status": "critical",
+                    "response_code": response.status_code,
+                    "error": f"Unhealthy response from server: {response.status_code}",
+                    "message": "Streamlit server is not healthy",
+                    "url": url
+                }
 
-def health_check():
+        except requests.exceptions.ConnectionError as e:
+            self.logger.error(f"Connection error while checking Streamlit server: {str(e)}")
+            return {
+                "status": "critical",
+                "error": f"Connection error: {str(e)}",
+                "message": "Cannot connect to Streamlit server",
+                "url": url
+            }
+        except requests.exceptions.Timeout as e:
+            self.logger.error(f"Timeout while checking Streamlit server: {str(e)}")
+            return {
+                "status": "critical",
+                "error": f"Timeout error: {str(e)}",
+                "message": "Streamlit server is not responding",
+                "url": url
+            }
+        except Exception as e:
+            self.logger.error(f"Unexpected error while checking Streamlit server: {str(e)}")
+            return {
+                "status": "critical",
+                "error": f"Unknown error: {str(e)}",
+                "message": "Failed to check Streamlit server",
+                "url": url
+            }
+    
+def health_check(config_path:str = "health_check_config.json"):
+    logger = logging.getLogger(f"{__name__}.health_check")
+    logger.info("Starting health check dashboard")
     st.title("Application Health Dashboard")
     
     # Initialize or get the health check service
     if "health_service" not in st.session_state:
-        st.session_state.health_service = HealthCheckService()
+        logger.info("Initializing new health check service")
+        st.session_state.health_service = HealthCheckService(config_path = config_path)
         st.session_state.health_service.start()
     
     health_service = st.session_state.health_service
@@ -506,8 +631,59 @@ def health_check():
         try:
             last_updated = datetime.fromisoformat(health_data["last_updated"])
             st.text(f"Last updated: {last_updated.strftime('%Y-%m-%d %H:%M:%S')}")
-        except:
-            st.text(f"Last updated: {health_data['last_updated']}")
+        except Exception as e:
+            st.error(f"Last updated: {health_data['last_updated']}")
+            st.exception(e)
+    
+    server_health = health_data.get("streamlit_server", {})
+    server_status = server_health.get("status", "unknown")
+    server_color = {
+        "healthy": "green",
+        "critical": "red",
+        "unknown": "gray"
+    }.get(server_status, "gray")
+
+    st.markdown(
+        f"### Streamlit Server Status: <span style='color: {server_color}'>{server_status.upper()}</span>",
+        unsafe_allow_html=True
+    )
+
+    if server_status != "healthy":
+        st.error(server_health.get("message", "Server status unknown"))
+        if "error" in server_health:
+            st.code(server_health["error"])
+    else:
+        st.success(server_health.get("message", "Server is running"))
+        if "latency_ms" in server_health:
+            latency = server_health["latency_ms"]
+            # Define color based on latency thresholds
+            if latency <= 50:
+                latency_color = "green"
+                performance = "Excellent"
+            elif latency <= 100:
+                latency_color = "blue"
+                performance = "Good"
+            elif latency <= 200:
+                latency_color = "orange"
+                performance = "Fair"
+            else:
+                latency_color = "red"
+                performance = "Poor"
+                
+            st.markdown(
+                f"""
+                <div style='display: flex; align-items: center; gap: 10px;'>
+                    <div>Server Response Time:</div>
+                    <div style='color: {latency_color}; font-weight: bold;'>
+                        {latency} ms
+                    </div>
+                    <div style='color: {latency_color};'>
+                        ({performance})
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
     
     # Create tabs for different categories of health checks
     tab1, tab2, tab3, tab4 = st.tabs(["System Resources", "Dependencies", "Custom Checks", "Streamlit Pages"])
@@ -621,8 +797,7 @@ def health_check():
     with tab4:
         page_health = health_data.get("streamlit_pages", {})
         status = page_health.get("status", "unknown")
-        error_count = page_health.get("error_count", 0)
-        
+        error_count = page_health.get("error_count", 0)  
         status_color = {
             "healthy": "green",
             "critical": "red",
@@ -631,7 +806,6 @@ def health_check():
         
         st.markdown(f"### Page Status: <span style='color:{status_color}'>{status.upper()}</span>", unsafe_allow_html=True)
         st.metric("Error Count", error_count)
-        
         if error_count > 0:
             st.error("Pages with errors:")
             errors_dict = page_health.get("errors", {})
@@ -639,20 +813,25 @@ def health_check():
             if not isinstance(errors_dict, dict):
                 st.error("Invalid error data format")
                 return
-                
+            
             for page_name, page_errors in errors_dict.items():
-                # Ensure page_errors is a list
-                if isinstance(page_errors, dict):
-                    page_errors = [page_errors]
-                elif not isinstance(page_errors, list):
-                    continue
-                    
+                # Create a meaningful page name for display
+                display_name = page_name.split("/")[-1] if "/" in page_name else page_name
+                
                 for error_info in page_errors:
                     if isinstance(error_info, dict):
-                        with st.expander(f"Error in {page_name}"):
-                            st.text(f"Error: {error_info.get('error', 'Unknown error')}")
+                        with st.expander(f"Error in {display_name}"):
+                            # Display error message without the "Streamlit Error:" prefix
+                            st.error(error_info.get('error', 'Unknown error'))
+                            
+                            # Show additional error details
+                            if error_info.get('type') == 'streamlit_error':
+                                st.text("Type: Streamlit Error")
+                            else:
+                                st.text("Type: Exception")
+                                
                             st.text("Traceback:")
-                            st.code(error_info.get('traceback', 'No traceback available'))
+                            st.code("".join(error_info.get('traceback', ['No traceback available'])))
                             st.text(f"Timestamp: {error_info.get('timestamp', 'No timestamp')}")
     
     # Configuration section
@@ -673,6 +852,10 @@ def health_check():
                                  min_value=10, max_value=90, 
                                  value=health_service.config["thresholds"].get("disk_warning", 70),
                                  step=5)
+            streamlit_url_update = st.text_input(
+                "Streamlit Server URL",
+                value=health_service.config.get("streamlit_url", "http://localhost")
+            )
         
         with col2:
             cpu_critical = st.slider("CPU Critical Threshold (%)", 
@@ -688,10 +871,15 @@ def health_check():
                                   value=health_service.config["thresholds"].get("disk_critical", 90),
                                   step=5)
         
-        check_interval = st.slider("Check Interval (seconds)", 
-                              min_value=10, max_value=300, 
-                              value=health_service.config.get("check_interval", 60),
-                              step=10)
+            check_interval = st.slider("Check Interval (seconds)", 
+                                min_value=10, max_value=300, 
+                                value=health_service.config.get("check_interval", 60),
+                                step=10)
+            streamlit_port_update = st.number_input(
+                "Streamlit Server Port",
+                value=health_service.config.get("streamlit_port", 8501),
+                step=1
+            )
         
         if st.button("Save Configuration"):
             # Update configuration
@@ -702,6 +890,8 @@ def health_check():
             health_service.config["thresholds"]["disk_warning"] = disk_warning
             health_service.config["thresholds"]["disk_critical"] = disk_critical
             health_service.config["check_interval"] = check_interval
+            health_service.config["streamlit_url"] = streamlit_url_update
+            health_service.config["streamlit_port"] = streamlit_port_update
             
             # Save to file
             health_service.save_config()
