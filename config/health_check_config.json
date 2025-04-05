@@ -1,0 +1,26 @@
+{
+    "check_interval": 60,
+    "streamlit_url": "http://localhost",
+    "streamlit_port": 8501,
+    "system_checks": {
+        "cpu": true,
+        "memory": true,
+        "disk": true
+    },
+    "dependencies": {
+        "api_endpoints": [
+            {"name": "example_api", "url": "https://httpbin.org/get", "timeout": 5}
+        ],
+        "databases": [
+            {"name": "main_db", "type": "postgres", "connection_string": "..."}
+        ]
+    },
+    "thresholds": {
+        "cpu_warning": 70,
+        "cpu_critical": 90,
+        "memory_warning": 70,
+        "memory_critical": 90,
+        "disk_warning": 70,
+        "disk_critical": 90
+    }
+}
