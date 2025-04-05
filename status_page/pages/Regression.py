@@ -72,7 +72,7 @@ def regression_analysis():
         time_columns = ['year', 'month', 'day', 'hour']
         if all(col in df.columns for col in time_columns):
             df['timestamp'] = pd.to_datetime(
-                df[['year', 'month', 'day', 'hourss']].assign(minute=0),
+                df[['year', 'month', 'day', 'hour']].assign(minute=0),
                 format='%Y%m%d%H'
             )
 
@@ -200,7 +200,6 @@ def regression_analysis():
 
     except Exception as e:
         st.error(f"Error reading or processing the file: {str(e)}")
-
 
     # Add footer
     st.markdown("---")
