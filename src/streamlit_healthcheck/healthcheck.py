@@ -634,12 +634,26 @@ def health_check():
         
         if error_count > 0:
             st.error("Pages with errors:")
-            for page_name, error_info in page_health.get("errors", {}).items():
-                with st.expander(f"Error in {page_name}"):
-                    st.text(f"Error: {error_info['error']}")
-                    st.text("Traceback:")
-                    st.code(error_info['traceback'])
-                    st.text(f"Timestamp: {error_info['timestamp']}")
+            errors_dict = page_health.get("errors", {})
+            
+            if not isinstance(errors_dict, dict):
+                st.error("Invalid error data format")
+                return
+                
+            for page_name, page_errors in errors_dict.items():
+                # Ensure page_errors is a list
+                if isinstance(page_errors, dict):
+                    page_errors = [page_errors]
+                elif not isinstance(page_errors, list):
+                    continue
+                    
+                for error_info in page_errors:
+                    if isinstance(error_info, dict):
+                        with st.expander(f"Error in {page_name}"):
+                            st.text(f"Error: {error_info.get('error', 'Unknown error')}")
+                            st.text("Traceback:")
+                            st.code(error_info.get('traceback', 'No traceback available'))
+                            st.text(f"Timestamp: {error_info.get('timestamp', 'No timestamp')}")
     
     # Configuration section
     with st.expander("Health Check Configuration"):
