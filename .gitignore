@@ -136,3 +136,4 @@ data/
 
 # CodeQL
 /codeql_db
+*.sarif
