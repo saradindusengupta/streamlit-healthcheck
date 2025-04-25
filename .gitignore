@@ -137,3 +137,7 @@ data/
 # CodeQL
 /codeql_db
 *.sarif
+
+# VSCode specific files and folders
+.vscode/
+*.code-workspace
