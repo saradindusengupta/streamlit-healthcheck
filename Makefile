@@ -1,6 +1,6 @@
 .ONESHELL:
 ENV_PREFIX=$(python3 -c "if __import__('pathlib').Path('.venv/bin/pip').exists(): print('.venv/bin/')")
-project_name = $("soc_estimation")
+project_name = $("streamlit-healthcheck")
 
 .PHONY: help
 help:             ## Show the help.
