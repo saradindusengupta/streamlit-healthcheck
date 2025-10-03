@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streamlit-healthcheck"
+version = "1.0.0"
+description = "Comprehensive health monitoring for Streamlit apps: system, dependencies, custom checks, and page errors."
+authors = [
+    { name = "Saradindu Sengupta", email = "saradindu.mi1@iiitmk.ac.in" }
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "streamlit",
+    "psutil",
+    "requests",
+    "pandas",
+    "click",
+    "fastapi>=0.68.0",
+    "uvicorn>=0.15.0",
+    "joblib"
+]
+
+[project.urls]
+Homepage = "https://github.com/saradindusengupta/streamlit-healthcheck"
+Documentation = "https://github.com/saradindusengupta/streamlit-healthcheck"
+Issues = "https://github.com/saradindusengupta/streamlit-healthcheck/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+include-package-data = true
