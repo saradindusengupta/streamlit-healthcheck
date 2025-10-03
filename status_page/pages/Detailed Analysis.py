@@ -5,8 +5,6 @@ import plotly.graph_objects as go
 import os
 import streamlit as st
 import pandas as pd
-import sys
-sys.path.append('/home/saradindu/dev/streamlit-healthcheck/src/')
 from streamlit_healthcheck.healthcheck import StreamlitPageMonitor, HealthCheckService, health_check
 
 

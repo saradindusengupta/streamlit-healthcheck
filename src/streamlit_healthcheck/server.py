@@ -6,7 +6,25 @@ from .healthcheck import HealthCheckService
 import logging
 import argparse
 from contextlib import asynccontextmanager
-
+"""
+This module implements a FastAPI server for monitoring the health of a Streamlit application.
+Features:
+- Provides REST API endpoints to report health status of system resources, dependencies, and Streamlit pages.
+- Uses a configurable health check service to gather health data.
+- Supports startup and shutdown events for proper initialization and cleanup of the health check service.
+- Includes endpoints:
+    - `/health`: Returns complete health status.
+    - `/health/system`: Returns system resource health (CPU, Memory, Disk).
+    - `/health/dependencies`: Returns dependencies health status.
+    - `/health/pages`: Returns Streamlit pages health status.
+- Configurable via command-line arguments for host, port, and health check config file.
+- Uses logging for operational visibility.
+Global Variables:
+- `health_service`: Instance of HealthCheckService, manages health checks.
+- `config_file`: Path to health check configuration file.
+Usage:
+Run as a standalone server or import as a module.
+"""
 
 
 # Set up logging
@@ -29,7 +47,8 @@ async def lifespan(app: FastAPI):
     # Startup
     global health_service
     logger.info("Initializing health check service")
-    health_service = HealthCheckService(config_path=config_file)
+    config_path = config_file if config_file is not None else "health_check_config.json"
+    health_service = HealthCheckService(config_path=config_path)
     health_service.start()
     
     yield
@@ -47,24 +66,8 @@ app = FastAPI(
 )
 
 # Initialize health check service and config file path as global variables
-health_service: Optional[HealthCheckService] = None
-config_file: Optional[str] = None
+# health_service and config_file are already defined above
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize health check service on startup"""
-    global health_service, config_file
-    logger.info(f"Initializing health check service with config: {config_file}")
-    health_service = HealthCheckService(config_path=config_file)
-    health_service.start()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Stop health check service on shutdown"""
-    global health_service
-    if health_service:
-        logger.info("Stopping health check service")
-        health_service.stop()
 
 @app.get("/health", response_model=Dict[str, Any])
 async def get_health_status():

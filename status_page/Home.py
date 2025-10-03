@@ -2,9 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import os
-import sys
-sys.path.append('/home/saradindu/dev/streamlit-healthcheck/src/')
-from streamlit_healthcheck.healthcheck import StreamlitPageMonitor, HealthCheckService, health_check
+from streamlit_healthcheck.healthcheck import StreamlitPageMonitor
 
 
 @StreamlitPageMonitor.monitor_page("air_pollution_dashboard")

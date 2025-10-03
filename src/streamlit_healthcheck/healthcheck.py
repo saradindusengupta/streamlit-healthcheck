@@ -7,7 +7,7 @@ import time
 import threading
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
 import threading
 import functools
@@ -19,13 +19,38 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler()  # Prints to console
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 class StreamlitPageMonitor:
-    """Monitor Streamlit pages for exceptions and st.error calls"""
+    """
+    Singleton class to monitor and record errors and exceptions occurring in Streamlit pages.
+    This class monkey-patches `st.error` to capture error messages and provides decorators and methods
+    to track exceptions and errors per Streamlit page. Errors are stored in a class-level dictionary
+    and can be retrieved or cleared as needed.
+    Attributes:
+        _instance (StreamlitPageMonitor): Singleton instance of the monitor.
+        _errors (Dict[str, List[Dict[str, Any]]]): Dictionary mapping page names to lists of error records.
+        _st_error (Callable): Original `st.error` function before monkey-patching.
+        _current_page (str): Name of the current page being monitored.
+    Methods:
+        __new__(cls):
+            Ensures singleton behavior and monkey-patches `st.error` to record error messages.
+        _handle_st_error(cls, error_message: str):
+            Handles calls to `st.error` and records error information for the current page.
+        set_page_context(cls, page_name: str):
+            Sets the current page context for error recording.
+        monitor_page(cls, page_name: str):
+            Decorator to monitor a Streamlit page for exceptions and `st.error` calls.
+            Records exceptions and errors under the specified page name.
+        get_page_errors(cls):
+            Retrieves all recorded errors for all pages, grouped by page name.
+        clear_errors(cls, page_name: Optional[str] = None):
+            Clears recorded errors for a specific page or all pages.
+    """
+    
     _instance = None
     _errors: Dict[str, List[Dict[str, Any]]] = {}
     _st_error = st.error
@@ -49,6 +74,9 @@ class StreamlitPageMonitor:
                     'page': current_page
                 }
 
+                # Ensure current_page is a string, not None
+                if current_page is None:
+                    current_page = "unknown_page"
                 if current_page not in cls._errors:
                     cls._errors[current_page] = []
                 
@@ -62,7 +90,20 @@ class StreamlitPageMonitor:
 
     @classmethod
     def _handle_st_error(cls, error_message: str):
-        """Handle st.error calls and record them"""
+        """
+        Handles Streamlit-specific errors by recording error details for the current page.
+        Args:
+            error_message (str): The error message to be logged.
+        Side Effects:
+            Updates the class-level _errors dictionary with error information for the current Streamlit page.
+        Error Information Stored:
+            - error: Formatted error message.
+            - traceback: Stack trace at the point of error.
+            - timestamp: Time when the error occurred (ISO format).
+            - status: Error severity ('critical').
+            - type: Error type ('streamlit_error').
+        """
+        
         # Get current page name from Streamlit context
         current_page = getattr(st, '_current_page', 'unknown_page')
         
@@ -88,8 +129,35 @@ class StreamlitPageMonitor:
 
     @classmethod
     def monitor_page(cls, page_name: str):
-        """Decorator to monitor Streamlit pages for exceptions and st.error calls"""
+        """
+        Decorator to monitor and log exceptions for a specific Streamlit page.
+        Args:
+            page_name (str): The name of the page to monitor.
+        Returns:
+            Callable: A decorator that wraps the target function, sets the page context,
+            clears previous non-Streamlit errors, and logs any exceptions that occur during execution.
+        The decorator performs the following actions:
+            - Sets the current page context using `cls.set_page_context`.
+            - Clears previous exception errors for the page, retaining only those marked as 'streamlit_error'.
+            - Executes the wrapped function.
+            - If an exception occurs, logs detailed error information (error message, traceback, timestamp, status, type, and page)
+              to `cls._errors` under the given page name, then re-raises the exception.
+        """
+        
         def decorator(func):
+            """
+            Decorator to manage page-specific error handling and context setting.
+            This decorator sets the current page context before executing the decorated function.
+            It clears previous exception errors for the page, retaining only Streamlit error calls.
+            If an exception occurs during function execution, it captures error details including
+            the error message, traceback, timestamp, status, type, and page name, and appends them
+            to the page's error log. The exception is then re-raised.
+            Args:
+                func (Callable): The function to be decorated.
+            Returns:
+                Callable: The wrapped function with error handling and context management.
+            """
+            
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
                 # Set the current page context
@@ -121,7 +189,20 @@ class StreamlitPageMonitor:
 
     @classmethod
     def get_page_errors(cls):
-        """Get all recorded page errors"""
+        """
+        Collects and returns errors for each page that has recorded errors.
+        Iterates through the internal `_errors` dictionary, and for each page with errors,
+        constructs a list of error details including the error message, traceback, timestamp,
+        and error type.
+        Returns:
+            dict: A dictionary where keys are page names and values are lists of error details.
+                  Each error detail is a dictionary with the following keys:
+                      - 'error' (str): The error message or 'Unknown error' if not present.
+                      - 'traceback' (list): The traceback information or empty list if not present.
+                      - 'timestamp' (str): The timestamp of the error or empty string if not present.
+                      - 'type' (str): The type of error or 'unknown' if not present.
+        """
+        
         result = {}
         for page, errors in cls._errors.items():
             if errors:  # Only include pages with errors
@@ -147,16 +228,76 @@ class StreamlitPageMonitor:
 
 class HealthCheckService:
     """
-    A health check service for Streamlit multi-page applications.
-    Monitors system resources, external dependencies, and custom application checks.
+    HealthCheckService provides a comprehensive health monitoring solution for Streamlit applications.
+    It periodically checks system resources, external dependencies, custom health checks, and Streamlit server/page status,
+    updating and reporting the overall health status.
+    Attributes:
+        logger (logging.Logger): Logger for health check events.
+        config_path (str): Path to the health check configuration file.
+        health_data (Dict[str, Any]): Stores the latest health check results.
+        config (Dict): Loaded health check configuration.
+        check_interval (int): Interval (in seconds) between health checks.
+        _running (bool): Indicates if the health check service is running.
+        _thread (threading.Thread): Background thread for periodic checks.
+        streamlit_url (str): URL of the Streamlit server.
+        streamlit_port (int): Port of the Streamlit server.
+    Methods:
+        __init__(config_path: str = "health_check_config.json"):
+            Initializes the HealthCheckService with configuration and default health data.
+        _load_config() -> Dict:
+            Loads health check configuration from file or returns default configuration.
+        _get_default_config() -> Dict:
+            Returns the default health check configuration.
+        start():
+            Starts the health check service in a background thread.
+        stop():
+            Stops the health check service.
+        _run_checks_periodically():
+            Runs health checks periodically based on the configured interval.
+        run_all_checks():
+            Executes all configured health checks and updates health data.
+        check_cpu():
+            Checks CPU usage and updates health data.
+        check_memory():
+            Checks memory usage and updates health data.
+        check_disk():
+            Checks disk usage and updates health data.
+        check_dependencies():
+            Checks external dependencies such as APIs and databases.
+        _check_api_endpoint(endpoint: Dict):
+            Checks if an API endpoint is accessible and updates health data.
+        _check_database(db_config: Dict):
+            Checks database connection (placeholder for actual implementation).
+        register_custom_check(name: str, check_func: Callable[[], Dict[str, Any]]):
+            Registers a custom health check function.
+        run_custom_checks():
+            Executes all registered custom health checks.
+        _update_overall_status():
+            Updates the overall health status based on individual checks.
+        get_health_data() -> Dict:
+            Returns the latest health check data, excluding function references.
+        save_config():
+            Saves the current configuration to file.
+        check_streamlit_pages():
+            Checks for errors in Streamlit pages and updates health data.
+        check_streamlit_server() -> Dict[str, Any]:
+            Checks if the Streamlit server is running and responding.
     """
-    
     def __init__(self, config_path: str = "health_check_config.json"):
         """
-        Initialize the health check service.
-        
+        Initializes the HealthCheckService instance.
         Args:
-            config_path: Path to the health check configuration file
+            config_path (str): Path to the health check configuration file. Defaults to "health_check_config.json".
+        Attributes:
+            logger (logging.Logger): Logger for the HealthCheckService.
+            config_path (str): Path to the configuration file.
+            health_data (Dict[str, Any]): Dictionary storing health check data.
+            config (dict): Loaded configuration from the config file.
+            check_interval (int): Interval in seconds between health checks. Defaults to 60.
+            _running (bool): Indicates if the health check service is running.
+            _thread (threading.Thread or None): Thread running the health check loop.
+            streamlit_url (str): URL of the Streamlit service. Defaults to "http://localhost".
+            streamlit_port (int): Port of the Streamlit service. Defaults to 8501.
         """
         self.logger = logging.getLogger(f"{__name__}.HealthCheckService")
         self.logger.info("Initializing HealthCheckService")
@@ -261,7 +402,15 @@ class HealthCheckService:
         self._update_overall_status()
         
     def check_cpu(self):
-        """Check CPU usage and update health data."""
+        """
+        Checks the current CPU usage and updates the health status based on configured thresholds.
+        Measures the CPU usage percentage over a 1-second interval using psutil. Compares the result
+        against warning and critical thresholds defined in the configuration. Sets the status to
+        'healthy', 'warning', or 'critical' accordingly, and updates the health data dictionary.
+        Returns:
+            None
+        """
+        
         cpu_percent = psutil.cpu_percent(interval=1)
         warning_threshold = self.config["thresholds"].get("cpu_warning", 70)
         critical_threshold = self.config["thresholds"].get("cpu_critical", 90)
@@ -278,7 +427,16 @@ class HealthCheckService:
         }
         
     def check_memory(self):
-        """Check memory usage and update health data."""
+        """
+        Checks the system's memory usage and updates the health status accordingly.
+        Retrieves the current memory usage statistics using psutil, compares the usage percentage
+        against configured warning and critical thresholds, and sets the memory status to 'healthy',
+        'warning', or 'critical'. Updates the health_data dictionary with total memory, available memory,
+        usage percentage, and status.
+        Returns:
+            None
+        """
+        
         memory = psutil.virtual_memory()
         memory_percent = memory.percent
         warning_threshold = self.config["thresholds"].get("memory_warning", 70)
@@ -298,7 +456,16 @@ class HealthCheckService:
         }
         
     def check_disk(self):
-        """Check disk usage and update health data."""
+        """
+        Checks the disk usage of the root filesystem and updates the health status.
+        Retrieves disk usage statistics using psutil, compares the usage percentage
+        against configured warning and critical thresholds, and sets the disk status
+        accordingly ("healthy", "warning", or "critical"). Updates the health_data
+        dictionary with total disk size, free space, usage percentage, and status.
+        Returns:
+            None
+        """
+        
         disk = psutil.disk_usage('/')
         disk_percent = disk.percent
         warning_threshold = self.config["thresholds"].get("disk_warning", 70)
@@ -318,7 +485,14 @@ class HealthCheckService:
         }
         
     def check_dependencies(self):
-        """Check external dependencies like APIs and databases."""
+        """
+        Checks the health of configured dependencies, including API endpoints and databases.
+        Iterates through the list of API endpoints and databases specified in the configuration,
+        and performs health checks on each by invoking the corresponding internal methods.
+        Raises:
+            Exception: If any dependency check fails.
+        """
+        
         # Check API endpoints
         for endpoint in self.config["dependencies"].get("api_endpoints", []):
             self._check_api_endpoint(endpoint)
@@ -422,7 +596,23 @@ class HealthCheckService:
                     }
                     
     def _update_overall_status(self):
-        """Update the overall health status based on individual checks."""
+        """
+        Updates the overall health status of the application based on the statuses of various components.
+        The method checks the health status of the following components:
+            - Streamlit server
+            - System checks
+            - Dependencies
+            - Custom checks (excluding those with a 'check_func' key)
+            - Streamlit pages
+        The overall status is determined using the following priority order:
+            1. "critical" if any component is critical
+            2. "warning" if any component is warning and none are critical
+            3. "unknown" if any component is unknown and none are critical or warning, and no healthy components exist
+            4. "healthy" if any component is healthy and none are critical, warning, or unknown
+            5. "unknown" if no statuses are found
+        The result is stored in `self.health_data["overall_status"]`.
+        """
+        
         has_critical = False
         has_warning = False
         has_healthy = False
@@ -492,7 +682,18 @@ class HealthCheckService:
         return result
         
     def save_config(self):
-        """Save the current configuration to file."""
+        """
+        Saves the current health check configuration to a JSON file.
+        Attempts to write the configuration stored in `self.config` to the file specified by `self.config_path`.
+        Displays a success message in the Streamlit app upon successful save.
+        Handles and displays appropriate error messages for file not found, permission issues, JSON decoding errors, and other exceptions.
+        Raises:
+            FileNotFoundError: If the configuration file path does not exist.
+            PermissionError: If there are insufficient permissions to write to the file.
+            json.JSONDecodeError: If there is an error decoding the JSON data.
+            Exception: For any other exceptions encountered during the save process.
+        """
+        
         try:
             with open(self.config_path, "w") as f:
                 json.dump(self.config, f, indent=2)
@@ -506,7 +707,19 @@ class HealthCheckService:
         except Exception as e:
             st.error(f"Error saving health check config: {str(e)}")
     def check_streamlit_pages(self):
-        """Check for any Streamlit page errors"""
+        """
+        Checks for errors in Streamlit pages and updates the health data accordingly.
+        This method retrieves page errors using StreamlitPageMonitor.get_page_errors().
+        If errors are found, it sets the 'streamlit_pages' status to 'critical' and updates
+        the overall health status to 'critical'. If no errors are found, it marks the
+        'streamlit_pages' status as 'healthy'.
+        Updates:
+            self.health_data["streamlit_pages"]: Dict containing status, error count, errors, and details.
+            self.health_data["overall_status"]: Set to 'critical' if errors are detected.
+        Returns:
+            None
+        """
+        
         page_errors = StreamlitPageMonitor.get_page_errors()
         
         if "streamlit_pages" not in self.health_data:
@@ -530,7 +743,23 @@ class HealthCheckService:
             }
     
     def check_streamlit_server(self) -> Dict[str, Any]:
-        """Check if the Streamlit server is running and responding."""
+        """
+        Checks the health status of the Streamlit server by sending a GET request to the /healthz endpoint.
+        Returns:
+            Dict[str, Any]: A dictionary containing the health status, response code, latency in milliseconds,
+                            message, and the URL checked. If the server is healthy (HTTP 200), status is "healthy".
+                            Otherwise, status is "critical" with error details.
+        Handles:
+            - Connection errors: Returns critical status with connection error details.
+            - Timeout errors: Returns critical status with timeout error details.
+            - Other exceptions: Returns critical status with unknown error details.
+        Logs:
+            - The URL being checked.
+            - The response status code and text.
+            - Health status and response time if healthy.
+            - Warnings and errors for unhealthy or failed checks.
+        """
+        
         try:
             host = self.streamlit_url.rstrip('/')
             if not host.startswith(('http://', 'https://')):
@@ -589,6 +818,32 @@ class HealthCheckService:
             }
     
 def health_check(config_path:str = "health_check_config.json"):
+    """
+    Displays an interactive Streamlit dashboard for monitoring application health.
+    This function initializes and manages a health check service, presenting real-time system metrics,
+    dependency statuses, custom checks, and Streamlit page health in a user-friendly dashboard.
+    Users can manually refresh health checks, view detailed error information, and adjust configuration
+    thresholds and intervals directly from the UI.
+    Args:
+        config_path (str, optional): Path to the health check configuration JSON file.
+            Defaults to "health_check_config.json".
+    Features:
+        - Displays overall health status with color-coded indicators.
+        - Shows last updated timestamp for health data.
+        - Monitors Streamlit server status, latency, and errors.
+        - Provides tabs for:
+            * System Resources (CPU, Memory, Disk usage and status)
+            * Dependencies (external services and their health)
+            * Custom Checks (user-defined health checks)
+            * Streamlit Pages (page-specific errors and status)
+        - Allows configuration of system thresholds, check intervals, and Streamlit server settings.
+        - Supports manual refresh and saving configuration changes.
+    Raises:
+        Displays error messages in the UI for any exceptions encountered during health data retrieval or processing.
+    Returns:
+        None. The dashboard is rendered in the Streamlit app.
+    """
+    
     logger = logging.getLogger(f"{__name__}.health_check")
     logger.info("Starting health check dashboard")
     st.title("Application Health Dashboard")

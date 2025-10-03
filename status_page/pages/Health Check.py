@@ -7,7 +7,7 @@ Example usage in a multi-page Streamlit app
 import streamlit as st
 from datetime import datetime
 import sys
-sys.path.append('/home/saradindu/dev/streamlit-healthcheck/src/')
+sys.path.append("/home/saradindu/dev/streamlit-healthcheck/src")
 from streamlit_healthcheck.healthcheck import health_check
 
 # Set the page title and icon
@@ -18,7 +18,7 @@ st.set_page_config(
     layout="wide"
 )
 
-config_file = "/home/saradindu/dev/streamlit-healthcheck/config/health_check_config.json"
+config_file = "config/health_check_config.json"
 health_check(config_path=config_file)
 
 

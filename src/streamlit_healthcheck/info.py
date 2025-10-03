@@ -1,4 +1,4 @@
-__version__ = "0.0.1"
+# -*- coding: utf-8 -*-
 __author__ = "Saradindu Sengupta"
 __email__="saradindu.mi1@iiitmk.ac.in"
 __license__ = "GNU GENERAL PUBLIC LICENSE V3"
