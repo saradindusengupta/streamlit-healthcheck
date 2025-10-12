@@ -31,3 +31,6 @@ Designed to support continuous delivery and operational excellence by enabling a
 GNU GENERAL PUBLIC LICENSE V3
 
 """
+# -*- coding: utf-8 -*-
+# Version
+__version__ = "1.0.0"
