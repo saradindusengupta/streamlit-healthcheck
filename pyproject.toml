@@ -44,3 +44,6 @@ where = ["src"]
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "streamlit_healthcheck.__version__"}
