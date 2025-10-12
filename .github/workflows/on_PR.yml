@@ -1,15 +1,11 @@
-# This is a basic workflow which runs linter and tests explicitly
-name: main
+name: On Pull Request
 
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the main branch
-  push:
-    branches: [ main ]
-  #pull_request:
-    #branches: [ main ]
-
-  # Allows you to run this workflow manually from the Actions tab
+  # Trigger the workflow on push or pull request,
+  # but only for the main branch
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
