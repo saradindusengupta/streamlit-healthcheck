@@ -1,7 +1,7 @@
 # Publish the package to PyPI
 .PHONY: publish
-publish: build ## Publish the package to PyPI (requires PYPI_PASSWORD env var)
-	twine upload dist/* --verbose --username __token__ --password "$$PYPI_PASSWORD"
+publish: build ## Publish the package to PyPI (requires PYPI_TOKEN env var)
+	twine upload dist/* --verbose --username __token__ --password "$$PYPI_TOKEN"
 .ONESHELL:
 ENV_PREFIX := $(shell [ -f .venv/bin/pip ] && echo ".venv/bin/" || echo "")
 project_name := streamlit_healthcheck
