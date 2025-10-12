@@ -49,3 +49,29 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
+
+  tag_on_main:
+    needs: [build, tests_linux]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Set up Git user
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+      - name: Get version from setuptools_scm
+        id: scmver
+        run: |
+          VERSION=$(python -m setuptools_scm)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Create tag from setuptools_scm version
+        id: tag
+        run: |
+          TAG_NAME="v${{ steps.scmver.outputs.version }}"
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+      - name: Output tag name
+        run: echo "Created tag ${{ steps.tag.outputs.tag_name }}"
