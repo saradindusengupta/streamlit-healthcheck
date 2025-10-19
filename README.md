@@ -21,15 +21,62 @@ Streamlit HealthCheck is a comprehensive health monitoring solution for Streamli
 
 ---
 
-## Quickstart
+
+## How to Set Up & Run
+
+Follow these steps to set up and launch the Streamlit HealthCheck dashboard using the `status_page` app:
+
+### 1. Install Dependencies
+
+Make sure you have Python 3.11+ and Streamlit installed. You can install all required packages using:
 
 ```bash
-# Install the library from pip
-pip install streamlit_healthcheck
+pip install -r requirements.txt
+```
 
-# Run the demo Streamlit application which includes a dashboard
+Or, to install just the healthcheck package:
+
+```bash
+pip install streamlit_healthcheck
+```
+
+### 2. Configure Health Checks
+
+Edit `config/health_check_config.json` to customize system thresholds, endpoints, and custom checks. Example config:
+
+```json
+{
+  "system": { "cpu": 80, "memory": 75 },
+  "dependencies": ["https://api.example.com", "postgresql://..."],
+  "custom_checks": ["my_custom_check"]
+}
+```
+
+### 3. Run the Streamlit Dashboard
+
+Launch the main dashboard app:
+
+```bash
 streamlit run status_page/Home.py
 ```
+
+This will open the healthcheck dashboard in your browser. Use the sidebar to navigate between system, dependency, and custom check tabs.
+
+### 4. Add More Pages (Optional)
+
+You can extend the dashboard by adding new pages to the `status_page/pages/` directory. Each `.py` file will appear as a tab in the Streamlit app.
+
+### 5. Troubleshooting
+
+
+If you encounter issues:
+
+- Ensure your config file is valid JSON
+- Check that all dependencies are reachable
+- Review error messages in the dashboard tabs
+
+
+---
 
 ---
 
