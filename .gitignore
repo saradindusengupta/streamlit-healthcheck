@@ -141,3 +141,7 @@ data/
 # VSCode specific files and folders
 .vscode/
 *.code-workspace
+
+# Ignore .db and .sqlite3 files anywhere in the tree
+**/*.db
+**/*.sqlite3
