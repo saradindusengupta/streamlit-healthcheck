@@ -1005,6 +1005,7 @@ def health_check(config_path:str = "health_check_config.json"):
         st.session_state.health_service.start()
     
     health_service = st.session_state.health_service
+    health_service.run_all_checks()
     
     # Add controls for manual refresh and configuration
     col1, col2 = st.columns([3, 1])
