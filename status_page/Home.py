@@ -4,7 +4,14 @@ import plotly.express as px
 import os
 from streamlit_healthcheck.healthcheck import StreamlitPageMonitor
 
-
+"""
+Place this at the top of your Streamlit app, before any error monitoring or decorator usage to ensure the sqlite
+database is created properly at the specified path otherwise it will default to a temp directory. The temp directory
+will be `~/local/share/streamlit-healthcheck/streamlit_page_errors.db`.
+```{python}
+StreamlitPageMonitor(db_path="/home/saradindu/dev/streamlit_page_errors.db")
+```
+"""
 @StreamlitPageMonitor.monitor_page("air_pollution_dashboard")
 def air_pollution_dashboard():
     # Set page config
