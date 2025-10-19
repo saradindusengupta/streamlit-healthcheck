@@ -209,6 +209,8 @@ if not report:
 - Add unit tests for new checks and integrations; CI runs linting and tests.
 - Use GitHub issues for bugs, feature requests, and discussions.
 
+To publish to PyPi run the GitHub Action [release.yml](https://github.com/saradindusengupta/streamlit-healthcheck/actions/workflows/release.yml)
+
 ## License
 
 GNU GENERAL PUBLIC LICENSE v3

@@ -11,7 +11,7 @@ on:
 
 jobs:
   release:
-    name: Create Release
+    name: Publish to PyPi
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -27,3 +27,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: release_message.md
+      - name: Publish to PyPI
+        run: make publish
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
