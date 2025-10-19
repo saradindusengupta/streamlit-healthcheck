@@ -1,6 +1,5 @@
 import streamlit as st
 import psutil
-import numpy as np
 import pandas as pd
 import requests
 import time
@@ -9,10 +8,11 @@ import json
 import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
-import threading
 import functools
 import traceback
 import logging
+
+import sqlite3
 
 # Set up logging
 logging.basicConfig(
@@ -56,15 +56,30 @@ class StreamlitPageMonitor:
     _st_error = st.error
     _current_page = None
 
-    def __new__(cls):
+    # --- SQLite schema for error persistence ---
+    # Table: errors
+    # Fields:
+    #   id INTEGER PRIMARY KEY AUTOINCREMENT
+    #   page TEXT
+    #   error TEXT
+    #   traceback TEXT
+    #   timestamp TEXT
+    #   status TEXT
+    #   type TEXT
+    _db_path = "/home/saradindu/dev/streamlit_page_errors.db"
+    #_db_path = "/var/lib/streamlit-healthcheck/streamlit_page_errors.db"
+
+    def __new__(cls, db_path=None):
         if cls._instance is None:
             cls._instance = super(StreamlitPageMonitor, cls).__new__(cls)
-            
+            # Allow db_path override at first instantiation
+            if db_path is not None:
+                cls._db_path = db_path
+
             # Monkey patch st.error to capture error messages
             def patched_error(*args, **kwargs):
                 error_message = " ".join(str(arg) for arg in args)
                 current_page = cls._current_page
-                
                 error_info = {
                     'error': error_message,
                     'traceback': traceback.format_stack(),
@@ -73,19 +88,28 @@ class StreamlitPageMonitor:
                     'type': 'streamlit_error',
                     'page': current_page
                 }
-
                 # Ensure current_page is a string, not None
                 if current_page is None:
                     current_page = "unknown_page"
                 if current_page not in cls._errors:
                     cls._errors[current_page] = []
-                
                 cls._errors[current_page].append(error_info)
-                
+                # Persist to DB
+                try:
+                    cls().save_errors_to_db([error_info])
+                except Exception as e:
+                    logger.error(f"Failed to save Streamlit error to DB: {e}")
                 # Call original st.error
                 return cls._st_error(*args, **kwargs)
-                
+
             st.error = patched_error
+
+            # Initialize SQLite database
+            cls._init_db()
+        else:
+            # If already instantiated, allow updating db_path if provided
+            if db_path is not None:
+                cls._db_path = db_path
         return cls._instance
 
     @classmethod
@@ -106,21 +130,24 @@ class StreamlitPageMonitor:
         
         # Get current page name from Streamlit context
         current_page = getattr(st, '_current_page', 'unknown_page')
-        
         error_info = {
             'error': f"Streamlit Error: {error_message}",
             'traceback': traceback.format_stack(),
             'timestamp': datetime.now().isoformat(),
             'status': 'critical',
-            'type': 'streamlit_error'
+            'type': 'streamlit_error',
+            'page': current_page
         }
-
         # Initialize list for page if not exists
         if current_page not in cls._errors:
             cls._errors[current_page] = []
-
         # Add new error
         cls._errors[current_page].append(error_info)
+        # Persist to DB
+        try:
+            cls().save_errors_to_db([error_info])
+        except Exception as e:
+            logger.error(f"Failed to save Streamlit error to DB: {e}")
 
     @classmethod
     def set_page_context(cls, page_name: str):
@@ -183,6 +210,11 @@ class StreamlitPageMonitor:
                     if page_name not in cls._errors:
                         cls._errors[page_name] = []
                     cls._errors[page_name].append(error_info)
+                    # Persist to DB
+                    try:
+                        cls().save_errors_to_db([error_info])
+                    except Exception as db_exc:
+                        logger.error(f"Failed to save exception error to DB: {db_exc}")
                     raise
             return wrapper
         return decorator
@@ -190,41 +222,158 @@ class StreamlitPageMonitor:
     @classmethod
     def get_page_errors(cls):
         """
-        Collects and returns errors for each page that has recorded errors.
-        Iterates through the internal `_errors` dictionary, and for each page with errors,
-        constructs a list of error details including the error message, traceback, timestamp,
-        and error type.
+        Loads and returns errors for each page from the SQLite database.
         Returns:
             dict: A dictionary where keys are page names and values are lists of error details.
-                  Each error detail is a dictionary with the following keys:
-                      - 'error' (str): The error message or 'Unknown error' if not present.
-                      - 'traceback' (list): The traceback information or empty list if not present.
-                      - 'timestamp' (str): The timestamp of the error or empty string if not present.
-                      - 'type' (str): The type of error or 'unknown' if not present.
         """
-        
+        try:
+            db_errors = cls().load_errors_from_db()
+        except Exception as e:
+            logger.error(f"Failed to load errors from DB: {e}")
+            db_errors = []
         result = {}
-        for page, errors in cls._errors.items():
-            if errors:  # Only include pages with errors
-                result[page] = [
-                    {
-                        'error': err.get('error', 'Unknown error'),
-                        'traceback': err.get('traceback', []),
-                        'timestamp': err.get('timestamp', ''),
-                        'type': err.get('type', 'unknown')
-                    }
-                    for err in errors
-                ]
+        for err in db_errors:
+            page = err.get('page', 'unknown')
+            if page not in result:
+                result[page] = []
+            # Try to parse traceback if it's a stringified list/trace
+            tb = err.get('traceback', [])
+            if isinstance(tb, str):
+                # Try to parse as list if possible
+                try:
+                    import ast
+                    tb_parsed = ast.literal_eval(tb)
+                    if isinstance(tb_parsed, list):
+                        tb = tb_parsed
+                except Exception:
+                    pass
+            result[page].append({
+                'error': err.get('error', 'Unknown error'),
+                'traceback': tb,
+                'timestamp': err.get('timestamp', ''),
+                'type': err.get('type', 'unknown')
+            })
         return result
 
     @classmethod
+    def save_errors_to_db(cls, errors):
+        """
+        Save a list of error dicts to the SQLite database.
+        Each error dict should have keys: page, error, traceback, timestamp, status, type.
+        """
+        if not errors:
+            return
+        conn = sqlite3.connect(cls._db_path)
+        try:
+            cursor = conn.cursor()
+            for err in errors:
+                # Ensure traceback is always a string for SQLite
+                tb = err.get("traceback")
+                if isinstance(tb, list):
+                    import json
+                    tb_str = json.dumps(tb)
+                else:
+                    tb_str = str(tb) if tb is not None else ""
+                cursor.execute(
+                    """
+                    INSERT INTO errors (page, error, traceback, timestamp, status, type)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        err.get("page"),
+                        err.get("error"),
+                        tb_str,
+                        err.get("timestamp"),
+                        err.get("status"),
+                        err.get("type"),
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @classmethod
     def clear_errors(cls, page_name: Optional[str] = None):
-        """Clear errors for a specific page or all pages"""
+        """Clear errors for a specific page or all pages, and remove from DB as well."""
         if page_name:
             if page_name in cls._errors:
                 del cls._errors[page_name]
+            # Remove from DB
+            try:
+                conn = sqlite3.connect(cls._db_path)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM errors WHERE page = ?", (page_name,))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.error(f"Failed to clear errors from DB for page {page_name}: {e}")
         else:
             cls._errors = {}
+            # Remove all from DB
+            try:
+                conn = sqlite3.connect(cls._db_path)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM errors")
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.error(f"Failed to clear all errors from DB: {e}")
+
+    @classmethod
+    def _init_db(cls):
+        import sqlite3
+        conn = sqlite3.connect(cls._db_path)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            page TEXT,
+            error TEXT,
+            traceback TEXT,
+            timestamp TEXT,
+            status TEXT,
+            type TEXT
+        )''')
+        conn.commit()
+        conn.close()
+    @classmethod
+    def load_errors_from_db(cls, page=None, status=None, limit=None):
+        """
+        Load errors from the SQLite database.
+        Optionally filter by page and/or status. Returns a list of error dicts.
+        """
+        conn = sqlite3.connect(cls._db_path)
+        try:
+            cursor = conn.cursor()
+            query = "SELECT id, page, error, traceback, timestamp, status, type FROM errors"
+            params = []
+            filters = []
+            if page:
+                filters.append("page = ?")
+                params.append(page)
+            if status:
+                filters.append("status = ?")
+                params.append(status)
+            if filters:
+                query += " WHERE " + " AND ".join(filters)
+            query += " ORDER BY timestamp DESC"
+            if limit:
+                query += f" LIMIT {int(limit)}"
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            errors = []
+            for row in rows:
+                errors.append({
+                    "id": row[0],
+                    "page": row[1],
+                    "error": row[2],
+                    "traceback": row[3],
+                    "timestamp": row[4],
+                    "status": row[5],
+                    "type": row[6],
+                })
+            return errors
+        finally:
+            conn.close()
 
 class HealthCheckService:
     """
@@ -997,44 +1146,29 @@ def health_check(config_path:str = "health_check_config.json"):
                                if k not in ["name", "type", "status", "error"] and not isinstance(v, dict)])
                 })
             
+            # Show dependencies table
             if dep_data:
-                df = pd.DataFrame(dep_data)
-                
-                # Apply color formatting to status column
-                def color_status(val):
-                    colors = {
-                        "healthy": "background-color: #c6efce; color: #006100",
-                        "warning": "background-color: #ffeb9c; color: #9c5700",
-                        "critical": "background-color: #ffc7ce; color: #9c0006",
-                        "unknown": "background-color: #eeeeee; color: #7f7f7f"
-                    }
-                    return colors.get(val.lower(), "")
-                
-                st.dataframe(df.style.map(color_status, subset=["Status"]))
+                df_deps = pd.DataFrame(dep_data)
+                st.dataframe(df_deps)
             else:
                 st.info("No dependencies configured")
-        else:
-            st.info("No dependencies configured")
-    
-    with tab3:
-        # Display custom checks
-        custom_checks = health_data.get("custom_checks", {})
-        if custom_checks:
-            # Create a dataframe for all custom checks
+
+            # Create a dataframe for all custom checks from health_data
+            custom_checks = health_data.get("custom_checks", {})
             check_data = []
             for name, check_info in custom_checks.items():
                 if isinstance(check_info, dict) and "check_func" not in check_info:
                     check_data.append({
                         "Name": name,
                         "Status": check_info.get("status", "unknown"),
-                        "Details": ", ".join([f"{k}: {v}" for k, v in check_info.items() 
-                                  if k not in ["name", "status", "check_func", "error"] and not isinstance(v, dict)]),
+                        "Details": ", ".join([f"{k}: {v}" for k, v in check_info.items()
+                                             if k not in ["name", "status", "check_func", "error"] and not isinstance(v, dict)]),
                         "Error": check_info.get("error", "")
                     })
-            
+
             if check_data:
-                df = pd.DataFrame(check_data)
-                
+                df_checks = pd.DataFrame(check_data)
+
                 # Apply color formatting to status column
                 def color_status(val):
                     colors = {
@@ -1043,49 +1177,42 @@ def health_check(config_path:str = "health_check_config.json"):
                         "critical": "background-color: #ffc7ce; color: #9c0006",
                         "unknown": "background-color: #eeeeee; color: #7f7f7f"
                     }
-                    return colors.get(val.lower(), "")
-                
-                st.dataframe(df.style.map(color_status, subset=["Status"]))
+                    return colors.get(str(val).lower(), "")
+
+                # Use styled dataframe to color the Status column
+                try:
+                    st.dataframe(df_checks.style.applymap(color_status, subset=["Status"]))
+                except Exception:
+                    # Fallback if styling isn't supported in the environment
+                    st.dataframe(df_checks)
             else:
                 st.info("No custom checks configured")
         else:
             st.info("No custom checks configured")
     with tab4:
-        page_health = health_data.get("streamlit_pages", {})
-        status = page_health.get("status", "unknown")
-        error_count = page_health.get("error_count", 0)  
+        # Always read page errors from SQLite DB for latest state
+        page_errors = StreamlitPageMonitor.get_page_errors()
+        error_count = sum(len(errors) for errors in page_errors.values())
+        status = "critical" if error_count > 0 else "healthy"
         status_color = {
             "healthy": "green",
             "critical": "red",
             "unknown": "gray"
         }.get(status, "gray")
-        
         st.markdown(f"### Page Status: <span style='color:{status_color}'>{status.upper()}</span>", unsafe_allow_html=True)
         st.metric("Error Count", error_count)
         if error_count > 0:
             st.error("Pages with errors:")
-            errors_dict = page_health.get("errors", {})
-            
-            if not isinstance(errors_dict, dict):
-                st.error("Invalid error data format")
-                return
-            
-            for page_name, page_errors in errors_dict.items():
-                # Create a meaningful page name for display
+            for page_name, page_errors_list in page_errors.items():
                 display_name = page_name.split("/")[-1] if "/" in page_name else page_name
-                
-                for error_info in page_errors:
+                for error_info in page_errors_list:
                     if isinstance(error_info, dict):
                         with st.expander(f"Error in {display_name}"):
-                            # Display error message without the "Streamlit Error:" prefix
                             st.error(error_info.get('error', 'Unknown error'))
-                            
-                            # Show additional error details
                             if error_info.get('type') == 'streamlit_error':
                                 st.text("Type: Streamlit Error")
                             else:
                                 st.text("Type: Exception")
-                                
                             st.text("Traceback:")
                             st.code("".join(error_info.get('traceback', ['No traceback available'])))
                             st.text(f"Timestamp: {error_info.get('timestamp', 'No timestamp')}")
