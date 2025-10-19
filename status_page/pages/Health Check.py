@@ -7,7 +7,6 @@ Example usage in a multi-page Streamlit app
 import streamlit as st
 from datetime import datetime
 import sys
-sys.path.append("/home/saradindu/dev/streamlit-healthcheck/src")
 from streamlit_healthcheck.healthcheck import health_check
 
 # Set the page title and icon

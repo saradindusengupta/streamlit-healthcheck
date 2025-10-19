@@ -1,5 +1,5 @@
 # This is a basic workflow which runs linter and tests explicitly
-name: CI
+name: main
 
 # Controls when the workflow will run
 on:
@@ -13,25 +13,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  linter:
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: [3.11]
-        os: [ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install project
-        run: make install
-      - name: Run linter
-        run: make lint
-
   tests_linux:
-    needs: linter
     strategy:
       fail-fast: false
       matrix:
@@ -39,10 +21,12 @@ jobs:
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
       - name: Install project
         run: make install
       - name: Run tests
@@ -53,5 +37,30 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-        # with:
-        #   fail_ci_if_error: true
+          fail_ci_if_error: true
+
+  tag_on_main:
+    needs: [tests_linux]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Set up Git user
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+      - name: Get version from setuptools_scm
+        id: scmver
+        run: |
+          VERSION=$(python -m setuptools_scm)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Create tag from setuptools_scm version
+        id: tag
+        run: |
+          TAG_NAME="v${{ steps.scmver.outputs.version }}"
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+      - name: Output tag name
+        run: echo "Created tag ${{ steps.tag.outputs.tag_name }}"

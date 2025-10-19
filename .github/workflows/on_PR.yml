@@ -1,0 +1,46 @@
+name: On Pull Request
+
+on:
+  # Trigger the workflow on push or pull request,
+  # but only for the main branch
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  tests_linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [3.11]
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+      - name: Install project
+        run: make install
+      - name: Run tests
+        run: make test
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [3.11]
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install project
+        run: make install
+      - name: Check streamlit_healthcheck installation
+        run: |
+          python -c "import streamlit_healthcheck; print('streamlit_healthcheck is installed')"

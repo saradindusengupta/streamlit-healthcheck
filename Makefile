@@ -1,7 +1,7 @@
 # Publish the package to PyPI
 .PHONY: publish
-publish: build ## Publish the package to PyPI (requires PYPI_PASSWORD env var)
-	twine upload dist/* --username __token__ --password "$$PYPI_PASSWORD"
+publish: build ## Publish the package to PyPI (requires PYPI_TOKEN env var)
+	twine upload dist/* --verbose --username __token__ --password "$$PYPI_TOKEN"
 .ONESHELL:
 ENV_PREFIX := $(shell [ -f .venv/bin/pip ] && echo ".venv/bin/" || echo "")
 project_name := streamlit_healthcheck
@@ -37,9 +37,13 @@ lint:             ## Run pep8, black, mypy linters.
 	black -l 79 --check src/$(project_name)/
 	black -l 79 --check tests/
 
-.PHONY: test
-test:                              ## Run tests and generate coverage report.
+.PHONY: test_coverage
+test_coverage:    ## Run tests and generate coverage report.
 	pytest -v --cov-config .coveragerc --cov=src/$(project_name) -l --tb=short --maxfail=1 tests/
+
+.PHONY: test
+test:    ## Run tests.
+	pytest -v -l --tb=short --maxfail=1 tests/
 
 .PHONY: watch
 watch:            ## Run tests on every change.

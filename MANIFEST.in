@@ -1,4 +1,3 @@
 include LICENSE
-include HISTORY.md
-include Dockerfile
+include CONTRIBUTING.md
 graft tests

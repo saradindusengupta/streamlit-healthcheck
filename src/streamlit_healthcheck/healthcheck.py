@@ -1,6 +1,5 @@
 import streamlit as st
 import psutil
-import numpy as np
 import pandas as pd
 import requests
 import time
@@ -9,10 +8,10 @@ import json
 import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
-import threading
 import functools
 import traceback
 import logging
+import sqlite3
 
 # Set up logging
 logging.basicConfig(
@@ -26,45 +25,232 @@ logger = logging.getLogger(__name__)
 
 class StreamlitPageMonitor:
     """
-    Singleton class to monitor and record errors and exceptions occurring in Streamlit pages.
-    This class monkey-patches `st.error` to capture error messages and provides decorators and methods
-    to track exceptions and errors per Streamlit page. Errors are stored in a class-level dictionary
-    and can be retrieved or cleared as needed.
-    Attributes:
-        _instance (StreamlitPageMonitor): Singleton instance of the monitor.
-        _errors (Dict[str, List[Dict[str, Any]]]): Dictionary mapping page names to lists of error records.
-        _st_error (Callable): Original `st.error` function before monkey-patching.
-        _current_page (str): Name of the current page being monitored.
-    Methods:
-        __new__(cls):
-            Ensures singleton behavior and monkey-patches `st.error` to record error messages.
-        _handle_st_error(cls, error_message: str):
-            Handles calls to `st.error` and records error information for the current page.
-        set_page_context(cls, page_name: str):
-            Sets the current page context for error recording.
-        monitor_page(cls, page_name: str):
-            Decorator to monitor a Streamlit page for exceptions and `st.error` calls.
-            Records exceptions and errors under the specified page name.
-        get_page_errors(cls):
-            Retrieves all recorded errors for all pages, grouped by page name.
-        clear_errors(cls, page_name: Optional[str] = None):
-            Clears recorded errors for a specific page or all pages.
-    """
+    Singleton class that monitors and records errors occurring within Streamlit pages.
+    It captures both explicit Streamlit error messages (monkey-patching st.error) and
+    uncaught exceptions raised during the execution of monitored page functions, and
+    persists error details to a local SQLite database.
     
+    Key responsibilities
+    
+    - Intercept Streamlit error calls by monkey-patching st.error and record them with
+        a stack trace, timestamp, status, and type.
+    - Provide a decorator `monitor_page(page_name)` to set a page context, capture
+        exceptions raised while rendering/executing a page, and record those exceptions.
+    - Store errors in an in-memory structure grouped by page and persist them to
+        an SQLite database for later inspection.
+    - Provide utilities to load, deduplicate, clear, and query stored errors.
+    
+    Behavior and side effects
+    
+    - Implements the Singleton pattern: only one instance exists per Python process.
+    - On first instantiation, optionally accepts a custom db_path and initializes
+        the SQLite database and its parent directory (creating it if necessary).
+    - Monkey-patches `streamlit.error` (st.error) to capture calls and still forward
+        them to the original st.error implementation.
+    - Records the following fields for each error: page, error, traceback, timestamp,
+        status, type. The SQLite table `errors` mirrors these fields and includes an
+        auto-incrementing `id`.
+    - Persists errors immediately to SQLite when captured; database IO errors are
+        logged but do not suppress the original exception (for monitored exceptions,
+        the exception is re-raised after recording).
+        
+    Public API (methods)
+    
+    - __new__(cls, db_path=None)
+            Create or return the singleton StreamlitPageMonitor instance.
+        
+            Parameters
+            ----------
+            db_path : Optional[str]
+                If provided on the first instantiation, overrides the class-level
+                database path used to persist captured Streamlit error information.
+                
+            Returns
+            -------
+            StreamlitPageMonitor
+                The singleton instance of the class.
+                
+            Behavior
+            --------
+            - On first instantiation (when cls._instance is None):
+            - Allocates the singleton via super().__new__.
+            - Optionally sets cls._db_path from the provided db_path.
+            - Logs the configured DB path.
+            - Monkey-patches streamlit.error (st.error) with a wrapper that:
+                - Builds an error record containing the error text, a formatted stack trace,
+                ISO timestamp, severity/status, an error type marker, and the current page.
+                - Normalizes a missing current page to "unknown_page".
+                - Stores the record in the in-memory cls._errors dictionary keyed by page.
+                - Attempts to persist the record to the SQLite DB using cls().save_errors_to_db,
+                logging any persistence errors without interrupting Streamlit's normal error display.
+                - Calls the original st.error to preserve expected UI behavior.
+            - Initializes the SQLite DB via cls._init_db().
+            - On subsequent calls:
+            - Returns the existing singleton instance.
+            - If db_path is provided, updates cls._db_path for future use.
+            
+            Side effects
+            ------------
+            - Replaces st.error globally for the running process.
+            - Writes error records to both an in-memory structure (cls._errors) and to the
+            configured SQLite database (if persistence succeeds).
+            - Logs informational and error messages.
+            
+            Notes
+            -----
+            - The method assumes the class defines/has: _instance, _db_path, _current_page,
+            _errors, _st_error (original st.error), save_errors_to_db, and _init_db.
+            - Exceptions raised during saving of individual errors are caught and logged;
+            exceptions from instance creation or DB initialization may propagate.
+            - The implementation is not explicitly thread-safe; concurrent instantiation
+            attempts may require external synchronization if used in multi-threaded contexts.
+    - set_page_context(cls, page_name: str)
+            Set the current page name used when recording subsequent errors.
+    - monitor_page(cls, page_name: str) -> Callable
+            Decorator for page rendering/execution functions. Sets the page context,
+            clears previously recorded non-Streamlit errors for that page, runs the
+            function, records and persists any raised exception, and re-raises it.
+    - _handle_st_error(cls, error_message: str)
+    
+            Handles Streamlit-specific errors by recording error details for the current page.
+        
+            Args:
+                error_message (str): The error message to be logged.
+                
+            Side Effects:
+                Updates the class-level _errors dictionary with error information for the current Streamlit page.
+                
+            Error Information Stored:
+                - error: Formatted error message.
+                - traceback: Stack trace at the point of error.
+                - timestamp: Time when the error occurred (ISO format).
+                - status: Error severity ('critical').
+                - type: Error type ('streamlit_error').
+    - get_page_errors(cls) -> dict
+            Load errors from the database and return a dictionary mapping page names to
+            lists of error dicts. Performs basic deduplication by error message.
+    - save_errors_to_db(cls, errors: Iterable[dict])
+            Persist a list of error dictionaries to the configured SQLite database.
+            Ensures traceback is stored as a string (JSON if originally a list).
+    - clear_errors(cls, page_name: Optional[str] = None)
+            Clear in-memory errors for a specific page or all pages and delete matching
+            rows from the database.
+    - _init_db(cls)
+            Ensure the database directory exists and create the `errors` table if it
+            does not exist.
+    - load_errors_from_db(cls, page=None, status=None, limit=None) -> List[dict]
+            Query the database for errors, optionally filtering by page and/or status,
+            returning a list of error dictionaries ordered by timestamp (descending)
+            and limited if requested.
+            
+    Storage and format
+    
+    - Default DB path: ~/local/share/streamlit-healthcheck/streamlit_page_errors.db (overridable).
+    - SQLite table `errors` columns: id, page, error, traceback, timestamp, status, type.
+    - Tracebacks may be stored as JSON strings (if originally lists) or plain strings.
+    Concurrency and robustness
+    - Designed for single-process usage typical of Streamlit apps. The singleton and
+        monkey-patching are process-global.
+    - Database interactions use short-lived connections; callers should handle any
+        exceptions arising from DB access (errors are logged internally).
+    - Decorator preserves original function metadata via functools.wraps.
+    
+    Examples
+    
+    - Use as a decorator on page render function:
+    >>> @StreamlitPageMonitor.monitor_page("home")
+    >>> def render_home():
+
+    - Set page context manually:
+    >>> StreamlitPageMonitor.set_page_context("settings")
+    
+    - Set custom DB path on first instantiation:
+    >>> # Place this at the top of your Streamlit app once, before any error monitoring or decorator usage to ensure the sqlite
+    >>> # database is created properly at the specified path; otherwise it will default to a temp directory. The temp directory
+    >>> # will be `~/local/share/streamlit-healthcheck/streamlit_page_errors.db`.
+    >>> StreamlitPageMonitor(db_path="/home/saradindu/dev/streamlit_page_errors.db")
+    ...
+
+    SQLite Database Schema
+    ---------------------
+    The following schema is used for persisting errors:
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS errors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        page TEXT,
+        error TEXT,
+        traceback TEXT,
+        timestamp TEXT,
+        status TEXT,
+        type TEXT
+    );
+    ```
+
+    Field Descriptions:
+
+    | Column     | Type    | Description                                 |
+    |------------|---------|---------------------------------------------|
+    | id         | INTEGER | Auto-incrementing primary key               |
+    | page       | TEXT    | Name of the Streamlit page                  |
+    | error      | TEXT    | Error message                               |
+    | traceback  | TEXT    | Stack trace or traceback (as string/JSON)   |
+    | timestamp  | TEXT    | ISO8601 timestamp of error occurrence       |
+    | status     | TEXT    | Severity/status (e.g., 'critical')          |
+    | type       | TEXT    | Error type ('streamlit_error', 'exception') |
+
+    Example:
+    
+    >>> @StreamlitPageMonitor.monitor_page("home")
+    >>> def render_home():
+    
+    Notes
+    
+    - The class monkey-patches st.error globally when first instantiated; ensure
+        this side effect is acceptable in your environment.
+    - Errors captured by st.error that occur outside any known page are recorded
+        under the page name "unknown_page".
+    - The schema is created/ensured in `_init_db()`.
+    - Tracebacks may be stored as JSON strings or plain text.
+    - Errors are persisted immediately upon capture.
+    
+    """
     _instance = None
     _errors: Dict[str, List[Dict[str, Any]]] = {}
     _st_error = st.error
     _current_page = None
 
-    def __new__(cls):
+    # --- SQLite schema for error persistence ---
+    # Table: errors
+    # Fields:
+    #   id INTEGER PRIMARY KEY AUTOINCREMENT
+    #   page TEXT
+    #   error TEXT
+    #   traceback TEXT
+    #   timestamp TEXT
+    #   status TEXT
+    #   type TEXT
+    
+    # Local development DB path
+    #_db_path = os.path.join(os.path.expanduser("~"), "dev", "streamlit-healthcheck", "streamlit_page_errors.db")
+    # Final build DB path
+    _db_path = os.path.join(os.path.expanduser("~"), ".local", "share", "streamlit-healthcheck", "streamlit_page_errors.db")
+
+    def __new__(cls, db_path=None):
+        """
+        Create or return the singleton StreamlitPageMonitor instance.
+        """
+        
         if cls._instance is None:
             cls._instance = super(StreamlitPageMonitor, cls).__new__(cls)
-            
+            # Allow db_path override at first instantiation
+            if db_path is not None:
+                cls._db_path = db_path
+            logger.info(f"StreamlitPageMonitor DB path set to: {cls._db_path}")
             # Monkey patch st.error to capture error messages
             def patched_error(*args, **kwargs):
                 error_message = " ".join(str(arg) for arg in args)
                 current_page = cls._current_page
-                
                 error_info = {
                     'error': error_message,
                     'traceback': traceback.format_stack(),
@@ -73,54 +259,56 @@ class StreamlitPageMonitor:
                     'type': 'streamlit_error',
                     'page': current_page
                 }
-
                 # Ensure current_page is a string, not None
                 if current_page is None:
                     current_page = "unknown_page"
                 if current_page not in cls._errors:
                     cls._errors[current_page] = []
-                
                 cls._errors[current_page].append(error_info)
-                
+                # Persist to DB
+                try:
+                    cls().save_errors_to_db([error_info])
+                except Exception as e:
+                    logger.error(f"Failed to save Streamlit error to DB: {e}")
                 # Call original st.error
                 return cls._st_error(*args, **kwargs)
-                
+
             st.error = patched_error
+
+            # Initialize SQLite database
+            cls._init_db()
+        else:
+            # If already instantiated, allow updating db_path if provided
+            if db_path is not None:
+                cls._db_path = db_path
         return cls._instance
 
     @classmethod
     def _handle_st_error(cls, error_message: str):
         """
         Handles Streamlit-specific errors by recording error details for the current page.
-        Args:
-            error_message (str): The error message to be logged.
-        Side Effects:
-            Updates the class-level _errors dictionary with error information for the current Streamlit page.
-        Error Information Stored:
-            - error: Formatted error message.
-            - traceback: Stack trace at the point of error.
-            - timestamp: Time when the error occurred (ISO format).
-            - status: Error severity ('critical').
-            - type: Error type ('streamlit_error').
         """
         
         # Get current page name from Streamlit context
         current_page = getattr(st, '_current_page', 'unknown_page')
-        
         error_info = {
             'error': f"Streamlit Error: {error_message}",
             'traceback': traceback.format_stack(),
             'timestamp': datetime.now().isoformat(),
             'status': 'critical',
-            'type': 'streamlit_error'
+            'type': 'streamlit_error',
+            'page': current_page
         }
-
         # Initialize list for page if not exists
         if current_page not in cls._errors:
             cls._errors[current_page] = []
-
         # Add new error
         cls._errors[current_page].append(error_info)
+        # Persist to DB
+        try:
+            cls().save_errors_to_db([error_info])
+        except Exception as e:
+            logger.error(f"Failed to save Streamlit error to DB: {e}")
 
     @classmethod
     def set_page_context(cls, page_name: str):
@@ -131,12 +319,16 @@ class StreamlitPageMonitor:
     def monitor_page(cls, page_name: str):
         """
         Decorator to monitor and log exceptions for a specific Streamlit page.
+        
         Args:
             page_name (str): The name of the page to monitor.
+            
         Returns:
             Callable: A decorator that wraps the target function, sets the page context,
             clears previous non-Streamlit errors, and logs any exceptions that occur during execution.
+            
         The decorator performs the following actions:
+        
             - Sets the current page context using `cls.set_page_context`.
             - Clears previous exception errors for the page, retaining only those marked as 'streamlit_error'.
             - Executes the wrapped function.
@@ -152,8 +344,10 @@ class StreamlitPageMonitor:
             If an exception occurs during function execution, it captures error details including
             the error message, traceback, timestamp, status, type, and page name, and appends them
             to the page's error log. The exception is then re-raised.
+            
             Args:
                 func (Callable): The function to be decorated.
+                
             Returns:
                 Callable: The wrapped function with error handling and context management.
             """
@@ -183,6 +377,11 @@ class StreamlitPageMonitor:
                     if page_name not in cls._errors:
                         cls._errors[page_name] = []
                     cls._errors[page_name].append(error_info)
+                    # Persist to DB
+                    try:
+                        cls().save_errors_to_db([error_info])
+                    except Exception as db_exc:
+                        logger.error(f"Failed to save exception error to DB: {db_exc}")
                     raise
             return wrapper
         return decorator
@@ -190,114 +389,456 @@ class StreamlitPageMonitor:
     @classmethod
     def get_page_errors(cls):
         """
-        Collects and returns errors for each page that has recorded errors.
-        Iterates through the internal `_errors` dictionary, and for each page with errors,
-        constructs a list of error details including the error message, traceback, timestamp,
-        and error type.
-        Returns:
-            dict: A dictionary where keys are page names and values are lists of error details.
-                  Each error detail is a dictionary with the following keys:
-                      - 'error' (str): The error message or 'Unknown error' if not present.
-                      - 'traceback' (list): The traceback information or empty list if not present.
-                      - 'timestamp' (str): The timestamp of the error or empty string if not present.
-                      - 'type' (str): The type of error or 'unknown' if not present.
+        Load error records from storage and return them grouped by page.
+        This class method calls cls().load_errors_from_db() to retrieve a sequence of error records
+        (each expected to be a mapping). It normalizes each record to a dictionary with the keys:
+        
+            - 'error' (str): error message, default "Unknown error"
+            - 'traceback' (list): traceback frames or lines, default []
+            - 'timestamp' (str): timestamp string, default ""
+            - 'type' (str): error type/category, default "unknown"
+            
+        Grouping and uniqueness:
+        
+            - Records are grouped by the 'page' key; if a record has no 'page' key, the page name
+                "unknown" is used.
+            - For each page, only unique errors are kept using the 'error' string as the deduplication
+                key. When multiple records for the same page have the same 'error' value, the last
+                occurrence in the loaded sequence will be retained.
+                
+        Return value:
+        
+            - dict[str, list[dict]]: mapping from page name to a list of normalized error dicts.
+            
+        Error handling:
+        
+            - Any exception raised while loading or processing records will be logged via logger.error.
+                The method will return the result accumulated so far (or an empty dict if nothing was
+                accumulated).
+                
+        Notes:
+        
+            - The class is expected to be instantiable (cls()) and to provide a load_errors_from_db()
+                method that yields or returns an iterable of mappings.
         """
         
         result = {}
-        for page, errors in cls._errors.items():
-            if errors:  # Only include pages with errors
-                result[page] = [
-                    {
-                        'error': err.get('error', 'Unknown error'),
-                        'traceback': err.get('traceback', []),
-                        'timestamp': err.get('timestamp', ''),
-                        'type': err.get('type', 'unknown')
-                    }
-                    for err in errors
-                ]
-        return result
+        try:
+            db_errors = cls().load_errors_from_db()
+            for err in db_errors:
+                page = err.get('page', 'unknown')
+                if page not in result:
+                    result[page] = []
+                result[page].append({
+                    'error': err.get('error', 'Unknown error'),
+                    'traceback': err.get('traceback', []),
+                    'timestamp': err.get('timestamp', ''),
+                    'type': err.get('type', 'unknown')
+                })
+            # Return only unique page errors using the 'page' column for filtering
+            return {page: list({e['error']: e for e in errors}.values()) for page, errors in result.items()}
+        except Exception as e:
+            logger.error(f"Failed to load errors from DB: {e}")
+            return result
+
+    @classmethod
+    def save_errors_to_db(cls, errors):
+        """
+        Save a sequence of error records into the SQLite database configured at cls._db_path.
+        
+        Parameters
+        ----------
+        
+        errors : Iterable[Mapping] | list[dict]
+        
+            Sequence of error records to persist. Each record is expected to be a mapping with the
+            following keys (values are stored as provided, except for traceback which is normalized):
+            
+              - "page": identifier or name of the page where the error occurred (str)
+              - "error": human-readable error message (str)
+              - "traceback": traceback information; may be a str, list, or None. If a list, it will be
+                JSON-encoded before storage. If None, an empty string is stored.
+              - "timestamp": timestamp for the error (stored as provided)
+              - "status": status associated with the error (str)
+              - "type": classification/type of the error (str)
+              
+        Behavior
+        --------
+        
+        - If `errors` is falsy (None or empty), the method returns immediately without touching the DB.
+        - Opens a SQLite connection to the path stored in `cls._db_path`.
+        - Iterates over the provided records and inserts each into the `errors` table with columns
+          (page, error, traceback, timestamp, status, type).
+        - Ensures that the `traceback` value is always written as a string (list -> JSON string,
+          other values -> str(), None -> "").
+        - Commits the transaction if all inserts succeed and always closes the connection in a finally block.
+        
+        Exceptions
+        ----------
+        
+        - Underlying sqlite3 exceptions (e.g., sqlite3.Error) are not swallowed and will propagate to the caller
+          if connection/execution fails.
+          
+        Returns
+        -------
+        
+        None
+        """
+        if not errors:
+            return
+        conn = sqlite3.connect(cls._db_path)
+        try:
+            cursor = conn.cursor()
+            for err in errors:
+                # Ensure traceback is always a string for SQLite
+                tb = err.get("traceback")
+                if isinstance(tb, list):
+                    import json
+                    tb_str = json.dumps(tb)
+                else:
+                    tb_str = str(tb) if tb is not None else ""
+                cursor.execute(
+                    """
+                    INSERT INTO errors (page, error, traceback, timestamp, status, type)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        err.get("page"),
+                        err.get("error"),
+                        tb_str,
+                        err.get("timestamp"),
+                        err.get("status"),
+                        err.get("type"),
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
 
     @classmethod
     def clear_errors(cls, page_name: Optional[str] = None):
-        """Clear errors for a specific page or all pages"""
+        """Clear stored health-check errors for a specific page or for all pages.
+        This classmethod updates both the in-memory error cache and the persistent
+        SQLite-backed store.
+        
+        If `page_name` is provided:
+        
+        - Remove the entry for that page from the class-level in-memory dictionary
+            of errors (if present).
+        - Delete all rows in the SQLite `errors` table where `page` equals `page_name`.
+        
+        If `page_name` is None:
+        
+        - Clear the entire in-memory errors dictionary.
+        - Delete all rows from the SQLite `errors` table.
+        
+        Args:
+                page_name (Optional[str]): Name of the page whose errors should be cleared.
+                        If None, all errors are cleared.
+                        
+        Returns:
+                None
+                
+        Side effects:
+        
+                - Mutates class-level state (clears entries in `cls._errors`).
+                - Opens a SQLite connection to `cls._db_path` and executes DELETE statements
+                    against the `errors` table. Commits the transaction and closes the connection.
+                    
+        Error handling:
+        
+                - Database-related exceptions are caught and logged via the module logger;
+                    they are not re-raised by this method. As a result, callers should not
+                    rely on exceptions to detect DB failures.
+                    
+        Notes:
+        
+                - The method assumes `cls._db_path` points to a valid SQLite database file
+                    and that an `errors` table exists with a `page` column.
+                - This method does not provide synchronization; callers should take care of
+                    concurrent access to class state and the database if used from multiple
+                    threads or processes.
+        """
+        
         if page_name:
             if page_name in cls._errors:
                 del cls._errors[page_name]
+            # Remove from DB
+            try:
+                conn = sqlite3.connect(cls._db_path)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM errors WHERE page = ?", (page_name,))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.error(f"Failed to clear errors from DB for page {page_name}: {e}")
         else:
             cls._errors = {}
+            # Remove all from DB
+            try:
+                conn = sqlite3.connect(cls._db_path)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM errors")
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.error(f"Failed to clear all errors from DB: {e}")
+
+    @classmethod
+    def _init_db(cls):
+        """
+        Initialize the SQLite database file and ensure the required schema exists.
+        This class-level initializer performs the following steps:
+        
+        - Ensures the parent directory of cls._db_path exists; creates it if necessary.
+            - If cls._db_path has no parent directory (e.g., a bare filename), no directory is created.
+        - Connects to the SQLite database at cls._db_path (creating the file if it does not exist).
+        - Creates an "errors" table if it does not already exist with the following columns:
+            - id (INTEGER PRIMARY KEY AUTOINCREMENT)
+            - page (TEXT)
+            - error (TEXT)
+            - traceback (TEXT)
+            - timestamp (TEXT)
+            - status (TEXT)
+            - type (TEXT)
+        - Commits the schema change and closes the database connection.
+        - Logs informational and error messages using the module logger.
+        
+        Parameters
+        ----------
+        
+        cls : type
+        
+                The class on which this method is invoked. Must provide a valid string attribute
+                `_db_path` indicating the target SQLite database file path.
+                
+        Raises
+        ------
+        
+        Exception
+        
+                Re-raises exceptions encountered when creating the parent directory (os.makedirs).
+                
+        sqlite3.Error
+        
+                May be raised by sqlite3.connect or subsequent SQLite operations when the database
+                cannot be opened or initialized.
+                
+        Side effects
+        ------------
+        
+        - May create directories on the filesystem.
+        - May create or modify the SQLite database file at cls._db_path.
+        - Writes log messages via the module logger.
+        
+        Returns
+        -------
+        
+        None
+        """
+        
+        # Ensure the parent directory for the DB exists
+        db_dir = os.path.dirname(cls._db_path)
+        if db_dir and not os.path.exists(db_dir):
+            try:
+                os.makedirs(db_dir, exist_ok=False)
+                logger.info(f"Created directory for DB: {db_dir}")
+            except Exception as e:
+                logger.error(f"Failed to create DB directory {db_dir}: {e}")
+                raise
+        # Now create/connect to the DB and table
+        logger.info(f"Initializing SQLite DB at: {cls._db_path}")
+        conn = sqlite3.connect(cls._db_path)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            page TEXT,
+            error TEXT,
+            traceback TEXT,
+            timestamp TEXT,
+            status TEXT,
+            type TEXT
+        )''')
+        conn.commit()
+        conn.close()
+    @classmethod
+    def load_errors_from_db(cls, page=None, status=None, limit=None):
+        """
+        Load errors from the class SQLite database.
+        This classmethod connects to the SQLite database at cls._db_path, queries the
+        'errors' table, and returns matching error records as a list of dictionaries.
+        
+        Parameters:
+        
+            page (Optional[str]): If provided, filter results to rows where the 'page'
+                column equals this value.
+            status (Optional[str]): If provided, filter results to rows where the 'status'
+                column equals this value.
+            limit (Optional[int|str]): If provided, limits the number of returned rows.
+                The value is cast to int internally; a non-convertible value will raise
+                ValueError.
+                
+        Returns:
+        
+            List[dict]: A list of dictionaries representing rows from the 'errors' table.
+            Each dict contains the following keys:
+                - id: primary key (int)
+                - page: page identifier (str)
+                - error: short error message (str)
+                - traceback: full traceback or diagnostic text (str)
+                - timestamp: stored timestamp value as retrieved from the DB (type depends on schema)
+                - status: error status (str)
+                - type: error type/category (str)
+                
+        Raises:
+        
+            ValueError: If `limit` cannot be converted to int.
+            sqlite3.Error: If an SQLite error occurs while executing the query.
+            
+        Notes:
+        
+            - Uses parameterized queries for the 'page' and 'status' filters to avoid SQL
+              injection. The `limit` is applied after casting to int.
+            - Results are ordered by `timestamp` in descending order.
+            - The database connection is always closed in a finally block to ensure cleanup.
+        """
+        
+        conn = sqlite3.connect(cls._db_path)
+        try:
+            cursor = conn.cursor()
+            query = "SELECT id, page, error, traceback, timestamp, status, type FROM errors"
+            params = []
+            filters = []
+            if page:
+                filters.append("page = ?")
+                params.append(page)
+            if status:
+                filters.append("status = ?")
+                params.append(status)
+            if filters:
+                query += " WHERE " + " AND ".join(filters)
+            query += " ORDER BY timestamp DESC"
+            if limit:
+                query += f" LIMIT {int(limit)}"
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            errors = []
+            for row in rows:
+                errors.append({
+                    "id": row[0],
+                    "page": row[1],
+                    "error": row[2],
+                    "traceback": row[3],
+                    "timestamp": row[4],
+                    "status": row[5],
+                    "type": row[6],
+                })
+            return errors
+        finally:
+            conn.close()
 
 class HealthCheckService:
     """
-    HealthCheckService provides a comprehensive health monitoring solution for Streamlit applications.
-    It periodically checks system resources, external dependencies, custom health checks, and Streamlit server/page status,
-    updating and reporting the overall health status.
-    Attributes:
-        logger (logging.Logger): Logger for health check events.
-        config_path (str): Path to the health check configuration file.
-        health_data (Dict[str, Any]): Stores the latest health check results.
-        config (Dict): Loaded health check configuration.
-        check_interval (int): Interval (in seconds) between health checks.
-        _running (bool): Indicates if the health check service is running.
-        _thread (threading.Thread): Background thread for periodic checks.
-        streamlit_url (str): URL of the Streamlit server.
-        streamlit_port (int): Port of the Streamlit server.
-    Methods:
-        __init__(config_path: str = "health_check_config.json"):
-            Initializes the HealthCheckService with configuration and default health data.
-        _load_config() -> Dict:
-            Loads health check configuration from file or returns default configuration.
-        _get_default_config() -> Dict:
-            Returns the default health check configuration.
-        start():
-            Starts the health check service in a background thread.
-        stop():
-            Stops the health check service.
-        _run_checks_periodically():
-            Runs health checks periodically based on the configured interval.
-        run_all_checks():
-            Executes all configured health checks and updates health data.
-        check_cpu():
-            Checks CPU usage and updates health data.
-        check_memory():
-            Checks memory usage and updates health data.
-        check_disk():
-            Checks disk usage and updates health data.
-        check_dependencies():
-            Checks external dependencies such as APIs and databases.
-        _check_api_endpoint(endpoint: Dict):
-            Checks if an API endpoint is accessible and updates health data.
-        _check_database(db_config: Dict):
-            Checks database connection (placeholder for actual implementation).
-        register_custom_check(name: str, check_func: Callable[[], Dict[str, Any]]):
-            Registers a custom health check function.
-        run_custom_checks():
-            Executes all registered custom health checks.
-        _update_overall_status():
-            Updates the overall health status based on individual checks.
-        get_health_data() -> Dict:
-            Returns the latest health check data, excluding function references.
-        save_config():
-            Saves the current configuration to file.
-        check_streamlit_pages():
-            Checks for errors in Streamlit pages and updates health data.
-        check_streamlit_server() -> Dict[str, Any]:
-            Checks if the Streamlit server is running and responding.
+    A background-capable health monitoring service for a Streamlit-based application.
+    This class periodically executes a configurable set of checks (system metrics,
+    external dependencies, Streamlit server and pages, and user-registered custom checks),
+    aggregates their results, and exposes a sanitized health snapshot suitable for UI
+    display or remote monitoring.
+    
+    Primary responsibilities
+    
+    - Load and persist a JSON configuration that defines check intervals, thresholds,
+        dependencies to probe, and Streamlit connection settings.
+    - Run periodic checks in a dedicated background thread (start/stop semantics).
+    - Collect system metrics (CPU, memory, disk) using psutil and apply configurable
+        warning/critical thresholds.
+    - Probe configured HTTP API endpoints and (placeholder) database checks.
+    - Verify Streamlit server liveness by calling a /healthz endpoint and inspect
+        Streamlit page errors via StreamlitPageMonitor.
+    - Allow callers to register synchronous custom checks (functions returning dicts).
+    - Compute an aggregated overall status (critical > warning > unknown > healthy).
+    - Provide a sanitized snapshot of health data with function references removed for safe
+        serialization/display.
+        
+    Usage (high level)
+    
+    - Instantiate: svc = HealthCheckService(config_path="path/to/config.json")
+    - Optionally register custom checks: svc.register_custom_check("my_check", my_check_func)
+        where my_check_func() -> Dict[str, Any]
+    - Start background monitoring: svc.start()
+    - Stop monitoring: svc.stop()
+    - Retrieve current health snapshot for display or API responses: svc.get_health_data()
+    - Persist any changes to configuration: svc.save_config()
+    
+    Configuration (JSON)
+    
+    - check_interval: int (seconds) — how often to run the checks (default 60)
+    - streamlit_url: str — base host (default "http://localhost")
+    - streamlit_port: int — port for Streamlit server (default 8501)
+    - system_checks: { "cpu": bool, "memory": bool, "disk": bool }
+    - dependencies:
+            - api_endpoints: list of { "name": str, "url": str, "timeout": int }
+            - databases: list of { "name": str, "type": str, "connection_string": str }
+    - thresholds:
+            - cpu_warning, cpu_critical, memory_warning, memory_critical, disk_warning, disk_critical
+            
+    Health data structure (conceptual)
+    
+    - last_updated: ISO timestamp
+    - system: { "cpu": {...}, "memory": {...}, "disk": {...} }
+    - dependencies: { "<name>": {...}, ... }
+    - custom_checks: { "<name>": {...} }  (get_health_data() strips callable references)
+    - streamlit_server: {status, response_code/latency/error, message, url}
+    - streamlit_pages: {status, error_count, errors, details}
+    - overall_status: "healthy" | "warning" | "critical" | "unknown"
+    
+    Threading and safety
+    
+    - The service runs checks in a daemon thread started by start(). stop() signals the
+        thread to terminate and joins with a short timeout. Clients should avoid modifying
+        internal structures concurrently; get_health_data() returns a sanitized snapshot
+        appropriate for concurrent reads.
+        
+    Custom checks
+    
+    - register_custom_check(name, func): registers a synchronous function that returns a
+        dict describing the check result (must include a "status" key with one of the
+        recognized values). The service stores the function reference internally but returns
+        sanitized results via get_health_data().
+        
+    Error handling and logging
+    
+    - Individual checks catch exceptions and surface errors in the corresponding
+        health_data entry with status "critical" where appropriate.
+    - The Streamlit UI integration (st.* calls) is used for user-visible error messages
+        when loading/saving configuration; the service also logs events to its configured
+        logger.
+        
+    Extensibility notes
+    
+    - Database checks are left as placeholders; implement _check_database for specific DB
+        drivers/connections.
+    - Custom checks are synchronous; if long-running checks are required, adapt the
+        registration/run pattern to use async or worker pools.
     """
     def __init__(self, config_path: str = "health_check_config.json"):
         """
         Initializes the HealthCheckService instance.
+        
         Args:
             config_path (str): Path to the health check configuration file. Defaults to "health_check_config.json".
+            
         Attributes:
-            logger (logging.Logger): Logger for the HealthCheckService.
-            config_path (str): Path to the configuration file.
-            health_data (Dict[str, Any]): Dictionary storing health check data.
-            config (dict): Loaded configuration from the config file.
-            check_interval (int): Interval in seconds between health checks. Defaults to 60.
-            _running (bool): Indicates if the health check service is running.
-            _thread (threading.Thread or None): Thread running the health check loop.
-            streamlit_url (str): URL of the Streamlit service. Defaults to "http://localhost".
-            streamlit_port (int): Port of the Streamlit service. Defaults to 8501.
+        
+        - logger (logging.Logger): Logger for the HealthCheckService.
+        - config_path (str): Path to the configuration file.
+        - health_data (Dict[str, Any]): Dictionary storing health check data.
+        - config (dict): Loaded configuration from the config file.
+        - check_interval (int): Interval in seconds between health checks. Defaults to 60.
+        - _running (bool): Indicates if the health check service is running.
+        - _thread (threading.Thread or None): Thread running the health check loop.
+        - streamlit_url (str): URL of the Streamlit service. Defaults to "http://localhost".
+        - streamlit_port (int): Port of the Streamlit service. Defaults to 8501.
         """
         self.logger = logging.getLogger(f"{__name__}.HealthCheckService")
         self.logger.info("Initializing HealthCheckService")
@@ -359,7 +900,31 @@ class HealthCheckService:
         }
     
     def start(self):
-        """Start the health check service in a background thread."""
+        """
+        Start the periodic health-check background thread.
+        If the `healthcheck` runner is already active, this method is a no-op and returns
+        immediately. Otherwise, it marks the runner as running, creates a daemon thread
+        targeting self._run_checks_periodically, stores the thread on self._thread, and
+        starts it.
+        
+        Behavior and side effects:
+        
+        - Idempotent while running: repeated calls will not create additional threads.
+        - Sets self._running to True.
+        - Assigns a daemon threading.Thread to self._thread and starts it.
+        - Non-blocking: returns after starting the background thread.
+        - The daemon thread will not prevent the process from exiting.
+        
+        Thread-safety:
+        
+        - If start() may be called concurrently from multiple threads, callers should
+            ensure proper synchronization (e.g., external locking) to avoid race conditions.
+            
+        Returns:
+        
+                None
+        """
+        
         if self._running:
             return
             
@@ -407,7 +972,9 @@ class HealthCheckService:
         Measures the CPU usage percentage over a 1-second interval using psutil. Compares the result
         against warning and critical thresholds defined in the configuration. Sets the status to
         'healthy', 'warning', or 'critical' accordingly, and updates the health data dictionary.
+        
         Returns:
+        
             None
         """
         
@@ -433,7 +1000,9 @@ class HealthCheckService:
         against configured warning and critical thresholds, and sets the memory status to 'healthy',
         'warning', or 'critical'. Updates the health_data dictionary with total memory, available memory,
         usage percentage, and status.
+        
         Returns:
+        
             None
         """
         
@@ -460,9 +1029,11 @@ class HealthCheckService:
         Checks the disk usage of the root filesystem and updates the health status.
         Retrieves disk usage statistics using psutil, compares the usage percentage
         against configured warning and critical thresholds, and sets the disk status
-        accordingly ("healthy", "warning", or "critical"). Updates the health_data
+        accordingly (`healthy`, `warning`, or `critical`). Updates the health_data
         dictionary with total disk size, free space, usage percentage, and status.
+        
         Returns:
+        
             None
         """
         
@@ -489,7 +1060,9 @@ class HealthCheckService:
         Checks the health of configured dependencies, including API endpoints and databases.
         Iterates through the list of API endpoints and databases specified in the configuration,
         and performs health checks on each by invoking the corresponding internal methods.
+        
         Raises:
+        
             Exception: If any dependency check fails.
         """
         
@@ -506,6 +1079,7 @@ class HealthCheckService:
         Check if an API endpoint is accessible.
         
         Args:
+        
             endpoint: Dictionary with endpoint configuration
         """
         name = endpoint.get("name", "unknown_api")
@@ -544,6 +1118,7 @@ class HealthCheckService:
         based on your application's needs.
         
         Args:
+        
             db_config: Dictionary with database configuration
         """
         name = db_config.get("name", "unknown_db")
@@ -563,6 +1138,7 @@ class HealthCheckService:
         Register a custom health check function.
         
         Args:
+        
             name: Name of the custom check
             check_func: Function that performs the check and returns a dictionary with results
         """
@@ -598,18 +1174,21 @@ class HealthCheckService:
     def _update_overall_status(self):
         """
         Updates the overall health status of the application based on the statuses of various components.
+        
         The method checks the health status of the following components:
             - Streamlit server
             - System checks
             - Dependencies
             - Custom checks (excluding those with a 'check_func' key)
             - Streamlit pages
+            
         The overall status is determined using the following priority order:
             1. "critical" if any component is critical
             2. "warning" if any component is warning and none are critical
             3. "unknown" if any component is unknown and none are critical or warning, and no healthy components exist
             4. "healthy" if any component is healthy and none are critical, warning, or unknown
             5. "unknown" if no statuses are found
+            
         The result is stored in `self.health_data["overall_status"]`.
         """
         
@@ -687,7 +1266,9 @@ class HealthCheckService:
         Attempts to write the configuration stored in `self.config` to the file specified by `self.config_path`.
         Displays a success message in the Streamlit app upon successful save.
         Handles and displays appropriate error messages for file not found, permission issues, JSON decoding errors, and other exceptions.
+        
         Raises:
+        
             FileNotFoundError: If the configuration file path does not exist.
             PermissionError: If there are insufficient permissions to write to the file.
             json.JSONDecodeError: If there is an error decoding the JSON data.
@@ -713,10 +1294,15 @@ class HealthCheckService:
         If errors are found, it sets the 'streamlit_pages' status to 'critical' and updates
         the overall health status to 'critical'. If no errors are found, it marks the
         'streamlit_pages' status as 'healthy'.
+        
         Updates:
+        
             self.health_data["streamlit_pages"]: Dict containing status, error count, errors, and details.
             self.health_data["overall_status"]: Set to 'critical' if errors are detected.
+            self.health_data["streamlit_pages"]["details"]: A summary of the errors found.
+            
         Returns:
+        
             None
         """
         
@@ -726,9 +1312,10 @@ class HealthCheckService:
             self.health_data["streamlit_pages"] = {}
         
         if page_errors:
+            total_errors = sum(len(errors) for errors in page_errors.values())
             self.health_data["streamlit_pages"] = {
                 "status": "critical",
-                "error_count": len(page_errors),
+                "error_count": total_errors,
                 "errors": page_errors,
                 "details": "Errors detected in Streamlit pages"
             }
@@ -745,15 +1332,21 @@ class HealthCheckService:
     def check_streamlit_server(self) -> Dict[str, Any]:
         """
         Checks the health status of the Streamlit server by sending a GET request to the /healthz endpoint.
+        
         Returns:
+        
             Dict[str, Any]: A dictionary containing the health status, response code, latency in milliseconds,
                             message, and the URL checked. If the server is healthy (HTTP 200), status is "healthy".
                             Otherwise, status is "critical" with error details.
+                            
         Handles:
+        
             - Connection errors: Returns critical status with connection error details.
             - Timeout errors: Returns critical status with timeout error details.
             - Other exceptions: Returns critical status with unknown error details.
+            
         Logs:
+        
             - The URL being checked.
             - The response status code and text.
             - Health status and response time if healthy.
@@ -824,10 +1417,14 @@ def health_check(config_path:str = "health_check_config.json"):
     dependency statuses, custom checks, and Streamlit page health in a user-friendly dashboard.
     Users can manually refresh health checks, view detailed error information, and adjust configuration
     thresholds and intervals directly from the UI.
+    
     Args:
+    
         config_path (str, optional): Path to the health check configuration JSON file.
             Defaults to "health_check_config.json".
+            
     Features:
+    
         - Displays overall health status with color-coded indicators.
         - Shows last updated timestamp for health data.
         - Monitors Streamlit server status, latency, and errors.
@@ -838,9 +1435,13 @@ def health_check(config_path:str = "health_check_config.json"):
             * Streamlit Pages (page-specific errors and status)
         - Allows configuration of system thresholds, check intervals, and Streamlit server settings.
         - Supports manual refresh and saving configuration changes.
+        
     Raises:
+    
         Displays error messages in the UI for any exceptions encountered during health data retrieval or processing.
+        
     Returns:
+    
         None. The dashboard is rendered in the Streamlit app.
     """
     
@@ -855,6 +1456,7 @@ def health_check(config_path:str = "health_check_config.json"):
         st.session_state.health_service.start()
     
     health_service = st.session_state.health_service
+    health_service.run_all_checks()
     
     # Add controls for manual refresh and configuration
     col1, col2 = st.columns([3, 1])
@@ -996,44 +1598,29 @@ def health_check(config_path:str = "health_check_config.json"):
                                if k not in ["name", "type", "status", "error"] and not isinstance(v, dict)])
                 })
             
+            # Show dependencies table
             if dep_data:
-                df = pd.DataFrame(dep_data)
-                
-                # Apply color formatting to status column
-                def color_status(val):
-                    colors = {
-                        "healthy": "background-color: #c6efce; color: #006100",
-                        "warning": "background-color: #ffeb9c; color: #9c5700",
-                        "critical": "background-color: #ffc7ce; color: #9c0006",
-                        "unknown": "background-color: #eeeeee; color: #7f7f7f"
-                    }
-                    return colors.get(val.lower(), "")
-                
-                st.dataframe(df.style.map(color_status, subset=["Status"]))
+                df_deps = pd.DataFrame(dep_data)
+                st.dataframe(df_deps)
             else:
                 st.info("No dependencies configured")
-        else:
-            st.info("No dependencies configured")
-    
-    with tab3:
-        # Display custom checks
-        custom_checks = health_data.get("custom_checks", {})
-        if custom_checks:
-            # Create a dataframe for all custom checks
+
+            # Create a dataframe for all custom checks from health_data
+            custom_checks = health_data.get("custom_checks", {})
             check_data = []
             for name, check_info in custom_checks.items():
                 if isinstance(check_info, dict) and "check_func" not in check_info:
                     check_data.append({
                         "Name": name,
                         "Status": check_info.get("status", "unknown"),
-                        "Details": ", ".join([f"{k}: {v}" for k, v in check_info.items() 
-                                  if k not in ["name", "status", "check_func", "error"] and not isinstance(v, dict)]),
+                        "Details": ", ".join([f"{k}: {v}" for k, v in check_info.items()
+                                             if k not in ["name", "status", "check_func", "error"] and not isinstance(v, dict)]),
                         "Error": check_info.get("error", "")
                     })
-            
+
             if check_data:
-                df = pd.DataFrame(check_data)
-                
+                df_checks = pd.DataFrame(check_data)
+
                 # Apply color formatting to status column
                 def color_status(val):
                     colors = {
@@ -1042,49 +1629,50 @@ def health_check(config_path:str = "health_check_config.json"):
                         "critical": "background-color: #ffc7ce; color: #9c0006",
                         "unknown": "background-color: #eeeeee; color: #7f7f7f"
                     }
-                    return colors.get(val.lower(), "")
-                
-                st.dataframe(df.style.map(color_status, subset=["Status"]))
+                    return colors.get(str(val).lower(), "")
+
+                # Use styled dataframe to color the Status column
+                try:
+                    # apply expects a function that returns a sequence of styles for the column;
+                    # map color_status across the 'Status' column to produce the CSS strings.
+                    st.dataframe(
+                        df_checks.style.apply(
+                            lambda col: col.map(color_status),
+                            subset=["Status"]
+                        )
+                    )
+                except Exception:
+                    # Fallback if styling isn't supported in the environment
+                    st.dataframe(df_checks)
             else:
                 st.info("No custom checks configured")
         else:
             st.info("No custom checks configured")
     with tab4:
-        page_health = health_data.get("streamlit_pages", {})
-        status = page_health.get("status", "unknown")
-        error_count = page_health.get("error_count", 0)  
+        # Always read page errors from SQLite DB for latest state
+        page_errors = StreamlitPageMonitor.get_page_errors()
+        error_count = sum(len(errors) for errors in page_errors.values())
+        status = "critical" if error_count > 0 else "healthy"
         status_color = {
             "healthy": "green",
             "critical": "red",
             "unknown": "gray"
         }.get(status, "gray")
-        
         st.markdown(f"### Page Status: <span style='color:{status_color}'>{status.upper()}</span>", unsafe_allow_html=True)
         st.metric("Error Count", error_count)
         if error_count > 0:
-            st.error("Pages with errors:")
-            errors_dict = page_health.get("errors", {})
-            
-            if not isinstance(errors_dict, dict):
-                st.error("Invalid error data format")
-                return
-            
-            for page_name, page_errors in errors_dict.items():
-                # Create a meaningful page name for display
+            st.markdown("<div style='background-color:#ffe6e6; color:#b30000; padding:10px; border-radius:5px; border:1px solid #b30000; font-weight:bold;'>Pages with errors:</div>",
+            unsafe_allow_html=True)
+            for page_name, page_errors_list in page_errors.items():
                 display_name = page_name.split("/")[-1] if "/" in page_name else page_name
-                
-                for error_info in page_errors:
+                for error_info in page_errors_list:
                     if isinstance(error_info, dict):
                         with st.expander(f"Error in {display_name}"):
-                            # Display error message without the "Streamlit Error:" prefix
-                            st.error(error_info.get('error', 'Unknown error'))
-                            
-                            # Show additional error details
+                            st.info(error_info.get('error', 'Unknown error'))
                             if error_info.get('type') == 'streamlit_error':
                                 st.text("Type: Streamlit Error")
                             else:
                                 st.text("Type: Exception")
-                                
                             st.text("Traceback:")
                             st.code("".join(error_info.get('traceback', ['No traceback available'])))
                             st.text(f"Timestamp: {error_info.get('timestamp', 'No timestamp')}")
