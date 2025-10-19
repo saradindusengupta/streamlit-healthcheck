@@ -1,4 +1,3 @@
-
 # Streamlit HealthCheck
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -20,7 +19,6 @@ Streamlit HealthCheck is a comprehensive health monitoring solution for Streamli
 - **Configurable:** All checks and thresholds are managed via a simple JSON config file
 
 ---
-
 
 ## How to Set Up & Run
 
@@ -68,13 +66,11 @@ You can extend the dashboard by adding new pages to the `status_page/pages/` dir
 
 ### 5. Troubleshooting
 
-
 If you encounter issues:
 
 - Ensure your config file is valid JSON
 - Check that all dependencies are reachable
 - Review error messages in the dashboard tabs
-
 
 ---
 
@@ -82,14 +78,14 @@ If you encounter issues:
 
 ## Features
 
-| Feature              | Description                                                      |
-|----------------------|------------------------------------------------------------------|
-| System Health        | Monitors CPU, memory, disk usage with warning/critical thresholds |
-| Dependency Checks    | Verifies API endpoints and database connections                   |
-| Custom Checks        | Register custom health checks for your app logic                  |
-| Page Error Tracking  | Captures exceptions and Streamlit errors per page                 |
-| Live Dashboard       | Interactive UI with tabs and status indicators                    |
-| Configurable         | JSON-based config for checks and thresholds                       |
+| Feature             | Description                                                       |
+| ------------------- | ----------------------------------------------------------------- |
+| System Health       | Monitors CPU, memory, disk usage with warning/critical thresholds |
+| Dependency Checks   | Verifies API endpoints and database connections                   |
+| Custom Checks       | Register custom health checks for your app logic                  |
+| Page Error Tracking | Captures exceptions and Streamlit errors per page                 |
+| Live Dashboard      | Interactive UI with tabs and status indicators                    |
+| Configurable        | JSON-based config for checks and thresholds                       |
 
 ---
 
@@ -118,6 +114,33 @@ Makefile                       # Build and test commands
 tests/                         # Unit tests
 ```
 
+The project structure and control flow looks like below
+
+```text
+Project Control Flow
+
+  [System Metrics]    [Dependency Probes]    [Custom Checks]
+         |                   |                      |
+         +--------+----------+----------+-----------+
+                  |                     |
+               Collector (polls / hooks / events)
+                          |
+                      Checker Engine
+                 (thresholds, retries, caching)
+                          |
+                      Aggregator
+                (status rollup + history store)
+                          |
+                   Streamlit Dashboard
+               (status panels, graphs, runbooks)
+                          |
+              Alerts / Notifications / Webhooks
+```
+
+![HealthCheck Architecture](assets/architecture.png)
+
+Figure: high-level architecture and control flow (image from assets/).
+
 ---
 
 ## Troubleshooting
@@ -131,6 +154,6 @@ tests/                         # Unit tests
 
 - [Library Documentation](https://docs.streamlit.io/)
 - [Streamlit Documentation](https://docs.streamlit.io/)
-- [Issues & Discussions](https://github.com/saradindusengupta/streamlit-healthcheck/issues)
+- [Issues &amp; Discussions](https://github.com/saradindusengupta/streamlit-healthcheck/issues)
 
 ---
