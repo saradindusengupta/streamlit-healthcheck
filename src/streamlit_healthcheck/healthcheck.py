@@ -726,9 +726,10 @@ class HealthCheckService:
             self.health_data["streamlit_pages"] = {}
         
         if page_errors:
+            total_errors = sum(len(errors) for errors in page_errors.values())
             self.health_data["streamlit_pages"] = {
                 "status": "critical",
-                "error_count": len(page_errors),
+                "error_count": total_errors,
                 "errors": page_errors,
                 "details": "Errors detected in Streamlit pages"
             }
