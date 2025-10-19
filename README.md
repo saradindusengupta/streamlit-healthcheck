@@ -97,6 +97,8 @@ All health check settings are managed via `config/health_check_config.json`. You
 - System resource thresholds
 - API endpoints and database connections
 - Custom checks
+- Supports environment variables and optional YAML/JSON config for check registration.
+- Default timeouts and thresholds are overridable per-check.
 
 > [!TIP]
 > Use the dashboard's configuration expander to adjust thresholds and save changes on the fly.
@@ -143,6 +145,75 @@ Figure: high-level architecture and control flow (image from assets/).
 
 ---
 
+## Key features
+
+- Run synchronous or async health checks with timeouts and recovery hints
+- Register custom checks (liveness, readiness, dependency checks)
+- Expose HTTP/Streamlit endpoints for machine-readable and human-readable status
+- Emit structured metrics/events suitable for scraping or CI validation
+- Simple integration helpers for common backends (Redis, Postgres, external APIs)
+
+## Quickstart
+
+---
+
+1) Install:
+
+```{bash}
+pip install streamlit_healthcheck
+```
+
+2) Basic usage:
+
+>>> from streamlit_healthcheck import healthcheck
+>>> report = healthcheck.run_all(timeout=5)
+>>> if not report.ok:
+>>> # handle degraded state (log, alert, fail pipeline)
+>>> print(report.summary)
+>>>
+>>
+
+## API (common surface)
+
+- healthcheck.run_all(timeout: float = 5) -> HealthReport
+  Runs all registered checks and returns a HealthReport object with:
+
+  - ok: bool
+  - summary: str
+  - details: dict
+  - duration: float
+- healthcheck.register(name: str, fn: Callable, *, critical: bool = False)
+  Register a custom check function. Critical checks mark the whole service unhealthy.
+- healthcheck.serve(endpoint: str = "/health", host: str = "0.0.0.0", port: int = 8000)
+  Expose a simple HTTP endpoint (or embed in Streamlit) that returns JSON health status.
+
+## DevOps alignment
+
+- Reliable: Designed to reduce deployment failures and improve service uptime.
+- Automatable: Designed to be executed in CI/CD pipelines (pre-deploy checks, post-deploy smoke tests).
+- Observable: Emits structured outputs and metrics for dashboards and alerting.
+- Lean: Small, focused checks to enable frequent, low-risk deployments.
+- Measurable: Integrates with monitoring to improve MTTR and change failure rate.
+- Shareable: Clear APIs, runbooks examples, and integration docs for teams.
+
+## Integration tips
+
+- Use canary deployments or blue-green deployments to minimize impact during rollouts.
+- Use feature flags or conditional checks to avoid noisy alerts during rollouts.
+- Run healthcheck.run_all in CI as a gating step for deployments.
+- Expose metrics to Prometheus or your metrics backend for SLA tracking.
+
+## Contributing
+
+- Tests, type hints, and small, focused PRs welcome.
+- Follow the repository's [CONTRIBUTING.md](CONTRIBUTING.md) and code-of-conduct.
+- Add unit tests for new checks and integrations; CI runs linting and tests.
+- Use GitHub issues for bugs, feature requests, and discussions.
+
+## License
+
+GNU GENERAL PUBLIC LICENSE v3
+
 ## Troubleshooting
 
 > [!WARNING]
@@ -152,8 +223,7 @@ Figure: high-level architecture and control flow (image from assets/).
 
 ## Getting Help
 
-- [Library Documentation](https://docs.streamlit.io/)
-- [Streamlit Documentation](https://docs.streamlit.io/)
+- [Library Documentation](https://saradindusengupta.co.in/streamlit-healthcheck/streamlit_healthcheck.html)
 - [Issues &amp; Discussions](https://github.com/saradindusengupta/streamlit-healthcheck/issues)
 
 ---
