@@ -62,8 +62,17 @@ jobs:
         run: |
           VERSION=$(python -m setuptools_scm)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Check if version is a release (x.y.z)
+        id: check_release
+        run: |
+          VERSION="${{ steps.scmver.outputs.version }}"
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_release=false" >> $GITHUB_OUTPUT
       - name: Create tag from setuptools_scm version
         id: tag
+        if: steps.check_release.outputs.is_release == 'true'
         run: |
           TAG_NAME="v${{ steps.scmver.outputs.version }}"
           git tag "$TAG_NAME"
