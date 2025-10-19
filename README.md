@@ -1,7 +1,7 @@
+
 # Streamlit HealthCheck
 
-![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Streamlit](https://img.shields.io/badge/streamlit-app-red)
+ ![Python](https://img.shields.io/badge/python-3.11%2B-blue) | ![PyPI](https://img.shields.io/pypi/v/streamlit-healthcheck.svg) | [![codecov](https://codecov.io/gh/saradindusengupta/streamlit-healthcheck/graph/badge.svg?token=TYgMti1lFs)](https://codecov.io/gh/saradindusengupta/streamlit-healthcheck) | [![On Pull Request](https://github.com/saradindusengupta/streamlit-healthcheck/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/saradindusengupta/streamlit-healthcheck/actions/workflows/main.yml)
 
 > **Monitor, visualize, and manage the health of your Streamlit multi-page applications with ease.**
 
@@ -168,7 +168,9 @@ pip install streamlit_healthcheck
 >>> from streamlit_healthcheck import healthcheck
 >>> report = healthcheck.run_all(timeout=5)
 >>> if not report.ok:
+>>>
 >>> # handle degraded state (log, alert, fail pipeline)
+>>>
 >>> print(report.summary)
 >>>
 >>

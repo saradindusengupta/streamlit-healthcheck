@@ -50,6 +50,8 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
+      - name: Install setuptools_scm
+        run: pip install setuptools_scm
       - name: Get version from setuptools_scm
         id: scmver
         run: |
