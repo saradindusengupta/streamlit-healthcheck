@@ -11,7 +11,6 @@ from typing import Dict, List, Any, Optional, Callable
 import functools
 import traceback
 import logging
-
 import sqlite3
 
 # Set up logging
@@ -66,7 +65,7 @@ class StreamlitPageMonitor:
     #   timestamp TEXT
     #   status TEXT
     #   type TEXT
-    _db_path = "/home/saradindu/dev/streamlit_page_errors.db"
+    _db_path = "/home/saradindu/dev/streamlit-healthcheck/streamlit_page_errors.db"
     #_db_path = "/var/lib/streamlit-healthcheck/streamlit_page_errors.db"
 
     def __new__(cls, db_path=None):
@@ -321,7 +320,16 @@ class StreamlitPageMonitor:
 
     @classmethod
     def _init_db(cls):
-        import sqlite3
+        # Ensure the parent directory for the DB exists
+        db_dir = os.path.dirname(cls._db_path)
+        if db_dir and not os.path.exists(db_dir):
+            try:
+                os.makedirs(db_dir, exist_ok=False)
+                logger.info(f"Created directory for DB: {db_dir}")
+            except Exception as e:
+                logger.error(f"Failed to create DB directory {db_dir}: {e}")
+                raise
+        # Now create/connect to the DB and table
         conn = sqlite3.connect(cls._db_path)
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS errors (
