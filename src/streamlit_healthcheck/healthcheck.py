@@ -1184,7 +1184,14 @@ def health_check(config_path:str = "health_check_config.json"):
 
                 # Use styled dataframe to color the Status column
                 try:
-                    st.dataframe(df_checks.style.applymap(color_status, subset=["Status"]))
+                    # apply expects a function that returns a sequence of styles for the column;
+                    # map color_status across the 'Status' column to produce the CSS strings.
+                    st.dataframe(
+                        df_checks.style.apply(
+                            lambda col: col.map(color_status),
+                            subset=["Status"]
+                        )
+                    )
                 except Exception:
                     # Fallback if styling isn't supported in the environment
                     st.dataframe(df_checks)
