@@ -232,9 +232,9 @@ class StreamlitPageMonitor:
     #   type TEXT
     
     # Local development DB path
-    _db_path = os.path.join(os.path.expanduser("~"), "dev", "streamlit-healthcheck", "streamlit_page_errors.db")
+    #_db_path = os.path.join(os.path.expanduser("~"), "dev", "streamlit-healthcheck", "streamlit_page_errors.db")
     # Final build DB path
-    #_db_path = os.path.join(os.path.expanduser("~"), ".local", "share", "streamlit-healthcheck", "streamlit_page_errors.db")
+    _db_path = os.path.join(os.path.expanduser("~"), ".local", "share", "streamlit-healthcheck", "streamlit_page_errors.db")
 
     def __new__(cls, db_path=None):
         """
