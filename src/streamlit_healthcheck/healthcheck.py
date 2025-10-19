@@ -65,8 +65,11 @@ class StreamlitPageMonitor:
     #   timestamp TEXT
     #   status TEXT
     #   type TEXT
-    _db_path = "/home/saradindu/dev/streamlit-healthcheck/streamlit_page_errors.db"
-    #_db_path = "/var/lib/streamlit-healthcheck/streamlit_page_errors.db"
+    
+    # Local development DB path
+    _db_path = os.path.join(os.path.expanduser("~"), "dev", "streamlit-healthcheck", "streamlit_page_errors.db")
+    # Final build DB path
+    #_db_path = os.path.join(os.path.expanduser("~"), ".local", "share", "streamlit-healthcheck", "streamlit_page_errors.db")
 
     def __new__(cls, db_path=None):
         if cls._instance is None:
@@ -74,7 +77,7 @@ class StreamlitPageMonitor:
             # Allow db_path override at first instantiation
             if db_path is not None:
                 cls._db_path = db_path
-
+            logger.info(f"StreamlitPageMonitor DB path set to: {cls._db_path}")
             # Monkey patch st.error to capture error messages
             def patched_error(*args, **kwargs):
                 error_message = " ".join(str(arg) for arg in args)
@@ -225,34 +228,24 @@ class StreamlitPageMonitor:
         Returns:
             dict: A dictionary where keys are page names and values are lists of error details.
         """
+        result = {}
         try:
             db_errors = cls().load_errors_from_db()
+            for err in db_errors:
+                page = err.get('page', 'unknown')
+                if page not in result:
+                    result[page] = []
+                result[page].append({
+                    'error': err.get('error', 'Unknown error'),
+                    'traceback': err.get('traceback', []),
+                    'timestamp': err.get('timestamp', ''),
+                    'type': err.get('type', 'unknown')
+                })
+            # Return only unique page errors using the 'page' column for filtering
+            return {page: list({e['error']: e for e in errors}.values()) for page, errors in result.items()}
         except Exception as e:
             logger.error(f"Failed to load errors from DB: {e}")
-            db_errors = []
-        result = {}
-        for err in db_errors:
-            page = err.get('page', 'unknown')
-            if page not in result:
-                result[page] = []
-            # Try to parse traceback if it's a stringified list/trace
-            tb = err.get('traceback', [])
-            if isinstance(tb, str):
-                # Try to parse as list if possible
-                try:
-                    import ast
-                    tb_parsed = ast.literal_eval(tb)
-                    if isinstance(tb_parsed, list):
-                        tb = tb_parsed
-                except Exception:
-                    pass
-            result[page].append({
-                'error': err.get('error', 'Unknown error'),
-                'traceback': tb,
-                'timestamp': err.get('timestamp', ''),
-                'type': err.get('type', 'unknown')
-            })
-        return result
+            return result
 
     @classmethod
     def save_errors_to_db(cls, errors):
@@ -330,6 +323,7 @@ class StreamlitPageMonitor:
                 logger.error(f"Failed to create DB directory {db_dir}: {e}")
                 raise
         # Now create/connect to the DB and table
+        logger.info(f"Initializing SQLite DB at: {cls._db_path}")
         conn = sqlite3.connect(cls._db_path)
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS errors (
@@ -1211,13 +1205,14 @@ def health_check(config_path:str = "health_check_config.json"):
         st.markdown(f"### Page Status: <span style='color:{status_color}'>{status.upper()}</span>", unsafe_allow_html=True)
         st.metric("Error Count", error_count)
         if error_count > 0:
-            st.error("Pages with errors:")
+            st.markdown("<div style='background-color:#ffe6e6; color:#b30000; padding:10px; border-radius:5px; border:1px solid #b30000; font-weight:bold;'>Pages with errors:</div>",
+            unsafe_allow_html=True)
             for page_name, page_errors_list in page_errors.items():
                 display_name = page_name.split("/")[-1] if "/" in page_name else page_name
                 for error_info in page_errors_list:
                     if isinstance(error_info, dict):
                         with st.expander(f"Error in {display_name}"):
-                            st.error(error_info.get('error', 'Unknown error'))
+                            st.info(error_info.get('error', 'Unknown error'))
                             if error_info.get('type') == 'streamlit_error':
                                 st.text("Type: Streamlit Error")
                             else:
