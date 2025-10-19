@@ -58,12 +58,33 @@ async def lifespan(app: FastAPI):
         logger.info("Stopping health check service")
         health_service.stop()
 
+
 app = FastAPI(
     title="Streamlit Health Check API",
     description="API endpoints for monitoring Streamlit application health",
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Root endpoint providing service metadata and available endpoints
+@app.get("/", response_model=Dict[str, Any])
+async def root():
+    """
+    Root endpoint returning service metadata and available health endpoints.
+    """
+    return JSONResponse(
+        content={
+            "service": "streamlit-healthcheck",
+            "version": "1.0.0",
+            "description": "API for monitoring Streamlit application health",
+            "endpoints": {
+                "health": "/health",
+                "system": "/health/system",
+                "dependencies": "/health/dependencies",
+                "pages": "/health/pages"
+            }
+        }
+    )
 
 # Initialize health check service and config file path as global variables
 # health_service and config_file are already defined above
