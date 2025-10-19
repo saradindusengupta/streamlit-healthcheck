@@ -122,6 +122,7 @@ async def get_pages_health():
         raise HTTPException(status_code=503, detail="Health check service not initialized")
     
     try:
+        health_service.run_all_checks()
         health_data = health_service.get_health_data()
         return JSONResponse(content={"streamlit_pages": health_data.get("streamlit_pages", {})})
     except Exception as e:
