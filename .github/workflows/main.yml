@@ -55,18 +55,27 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-      - name: Install setuptools_scm
-        run: pip install setuptools_scm
-      - name: Get version from setuptools_scm
-        id: scmver
+      - name: Get latest tag
+        id: get_tag
         run: |
-          VERSION=$(python -m setuptools_scm)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-      - name: Create semver tag (no prefix/suffix)
+          git fetch --tags
+          TAG=$(git tag --sort=-v:refname | grep -E '^([0-9]+\.[0-9]+\.[0-9]+)$' | head -n 1)
+          echo "latest_tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Bump patch version
+        id: bump_version
         run: |
-          TAG_NAME="${{ steps.scmver.outputs.version }}"
-          git tag "$TAG_NAME"
-          git push origin "$TAG_NAME"
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-      - name: Output tag name
-        run: echo "Created tag ${{ steps.scmver.outputs.version }}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${{ steps.get_tag.outputs.latest_tag }}"
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            NEW_TAG="0.1.0"
+          else
+            NEW_PATCH=$((PATCH + 1))
+            NEW_TAG="$MAJOR.$MINOR.$NEW_PATCH"
+          fi
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create and push new tag
+        run: |
+          git tag "${{ steps.bump_version.outputs.new_tag }}"
+          git push origin "${{ steps.bump_version.outputs.new_tag }}"
+          echo "tag_name=${{ steps.bump_version.outputs.new_tag }}" >> $GITHUB_OUTPUT
