@@ -37,20 +37,20 @@ Example:
 Start the server with default configuration
 
 ```bash
-python -m streamlit-healthcheck.streamlit-healthcheck-cli serve
+python -m streamlit_healthcheck.streamlit-healthcheck-cli serve
 ```
 
 Start the server with custom configuration
 
 ```bash
-python -m streamlit-healthcheck.streamlit-healthcheck-cli serve --host 127.0.0.1 --port 8080 --config my_config.json --log-level DEBUG
+python -m streamlit_healthcheck.streamlit-healthcheck-cli serve --host 127.0.0.1 --port 8080 --config my_config.json --log-level DEBUG
 ```
 
 
 Initialize a new configuration file
 
 ```bash
-python -m streamlit-healthcheck.streamlit-healthcheck-cli init --config my_config.json
+python -m streamlit_healthcheck.streamlit-healthcheck-cli init --config my_config.json
 ```
 
 
