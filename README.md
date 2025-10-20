@@ -71,7 +71,7 @@ If you encounter issues:
 - Check that all dependencies are reachable
 - Review error messages in the dashboard tabs
 
----
+Also follow the atatched [how to guide](status_page/README.md)
 
 ---
 
