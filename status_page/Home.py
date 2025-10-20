@@ -143,6 +143,6 @@ def air_pollution_dashboard():
 
     # Add footer
     st.markdown("---")
-    st.markdown("*Data source: Kaggle*")
+    st.markdown("[*Data source: Beijing PM2.5 Data*](https://archive.ics.uci.edu/dataset/381/beijing+pm2+5+data)")
 if __name__ == "__main__":
     air_pollution_dashboard()

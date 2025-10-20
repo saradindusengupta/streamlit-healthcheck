@@ -134,6 +134,6 @@ def detailed_analysis():
 
     # Add footer
     st.markdown("---")
-    st.markdown("*Data source: Kaggle | Detailed Analysis Page*")
+    st.markdown("[*Data source: Beijing PM2.5 Data*](https://archive.ics.uci.edu/dataset/381/beijing+pm2+5+data)")
 if __name__ == "__main__":
     detailed_analysis()

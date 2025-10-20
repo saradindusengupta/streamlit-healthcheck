@@ -71,7 +71,7 @@ If you encounter issues:
 - Check that all dependencies are reachable
 - Review error messages in the dashboard tabs
 
----
+Also follow the atatched [how to guide](status_page/README.md)
 
 ---
 
@@ -209,7 +209,7 @@ if not report:
 - Add unit tests for new checks and integrations; CI runs linting and tests.
 - Use GitHub issues for bugs, feature requests, and discussions.
 
-To publish to PyPI run the GitHub Action [release.yml](https://github.com/saradindusengupta/streamlit-healthcheck/actions/workflows/release.yml)
+Each push on main with create a tag and publish to PyPI.
 
 ## License
 

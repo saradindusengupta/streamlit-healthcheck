@@ -49,6 +49,6 @@ new_version="v$major.$minor.$patch"
 echo "New version: $new_version"
 
 # Create and push new tag
-#git tag "$new_version"
-#git push origin "$new_version"
-#echo "Tag $new_version pushed to origin."
+git tag "$new_version"
+git push origin "$new_version"
+echo "Tag $new_version pushed to origin."
