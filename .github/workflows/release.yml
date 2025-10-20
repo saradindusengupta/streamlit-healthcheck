@@ -26,7 +26,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: release_message.md
-
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
       - name: Publish to PyPI
         run: make publish
         env:
