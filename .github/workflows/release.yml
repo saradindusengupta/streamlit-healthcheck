@@ -1,53 +1,114 @@
-name: Publish Python distribution to PyPI
+name: Release & Publish Python distribution to PyPI
+
 on:
   push:
-    tags:
-      - '*'  # Only run on tag pushes
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  build:
-    name: Build distribution
-    runs-on: ubuntu-latest
-
+  tests_linux:
+    name: Run Tests (Linux)
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [3.11]
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v5
-      with:
-        persist-credentials: false
-    - name: Set up Python
-      uses: actions/setup-python@v6
-      with:
-        python-version: "3.11"
-    - name: Install pypa/build
-      run: >-
-        python3 -m
-        pip install
-        build
-        --user
-    - name: Build a binary wheel and a source tarball
-      run: python3 -m build
-    - name: Store the distribution packages
-      uses: actions/upload-artifact@v4
-      with:
-        name: python-package-distributions
-        path: dist/
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+      - name: Install project
+        run: make install
+      - name: Run tests
+        run: make test
+      - name: Run coverage
+        run: pytest --cov --cov-branch --cov-report=xml
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+
+  tag_and_build:
+    name: Tag & Build Distribution
+    needs: [tests_linux]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.bump_version.outputs.new_tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+      - name: Set up Git user
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          git fetch --tags
+          TAG=$(git tag --sort=-v:refname | grep -E '^v?([0-9]+\.[0-9]+\.[0-9]+)$' | head -n 1)
+          echo "latest_tag=$TAG" >> $GITHUB_OUTPUT
+      - name: Bump patch version
+        id: bump_version
+        run: |
+          TAG_NO_V="${{ steps.get_tag.outputs.latest_tag }}"
+          TAG_NO_V=${TAG_NO_V#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$TAG_NO_V"
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            NEW_TAG="v0.1.0"
+          else
+            NEW_PATCH=$((PATCH + 1))
+            NEW_TAG="v$MAJOR.$MINOR.$NEW_PATCH"
+          fi
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+      - name: Create and push new tag
+        run: |
+          git tag "${{ steps.bump_version.outputs.new_tag }}"
+          git push origin "${{ steps.bump_version.outputs.new_tag }}"
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install pypi/build
+        run: python3 -m pip install build --user
+      - name: Build a binary wheel and a source tarball
+        run: python3 -m build
+      - name: Store the distribution packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
 
   publish-to-pypi:
-    name: >-
-      Publish Python distribution to PyPI
-    needs:
-    - build
+    name: Publish Python distribution to PyPI
+    needs: [tag_and_build]
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/streamlit-healthcheck 
+      url: https://pypi.org/p/streamlit-healthcheck
     permissions:
-      id-token: write  # IMPORTANT: mandatory for trusted publishing
-
+      id-token: write  # mandatory for trusted publishing
     steps:
-    - name: Download all the dists
-      uses: actions/download-artifact@v4
-      with:
-        name: python-package-distributions
-        path: dist/
-    - name: Publish distribution to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Download all the dists
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Publish distribution to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
