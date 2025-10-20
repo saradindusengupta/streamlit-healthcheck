@@ -10,7 +10,6 @@ authors = [
     { name = "Saradindu Sengupta", email = "saradindu.mi1@iiitmk.ac.in" }
 ]
 license = "GPL-3.0-or-later"
-license-files = ["LICEN[CS]E*"]
 readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
